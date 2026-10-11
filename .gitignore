@@ -1,0 +1,21 @@
+# Python 虚拟环境和缓存
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 本地环境变量文件
+.env
+.env.*
+!.env.example
+
+# 构建产物
+build/
+dist/
+*.egg-info/
+/backend/backend
+
+# 日志和系统文件
+*.log
+.DS_Store

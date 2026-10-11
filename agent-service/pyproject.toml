@@ -1,0 +1,22 @@
+[project]
+name = "agent-service"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Luananwei", email = "2403_88190568@noreply.gitcode.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.143.0",
+    "openai-agents>=0.23.1",
+    "pydantic>=2.14.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.scripts]
+agent-service = "agent_service:main"
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
