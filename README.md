@@ -13,19 +13,31 @@
 - 下方任务清单的 `[x]` 表示该项已实现或已完成；阶段是否结束还要看验收标准。
 
 ```mermaid
-flowchart LR
-    V0["V0 ✓<br/>服务闭环"]
-    V1["V1 ✓<br/>工具搜索"]
-    V2["V2 进行中<br/>研究工作流"]
-    V3["V3<br/>MySQL"]
-    V4["V4<br/>Redis"]
-    V5["V5<br/>异步任务"]
-    V6["V6<br/>SSE 与前端"]
-    V7["V7<br/>容器部署"]
-    V8["V8<br/>HTTPS 上线"]
-    V9["V9<br/>可靠性完善"]
+flowchart TB
+    subgraph CORE["核心能力 · V0–V4"]
+        direction LR
+        V0("V0 ✓<br/>服务闭环")
+        V1("V1 ✓<br/>工具搜索")
+        V2("V2 进行中<br/>研究工作流")
+        V3("V3<br/>MySQL")
+        V4("V4<br/>Redis")
+        V0 --> V1 --> V2 --> V3 --> V4
+    end
 
-    V0 --> V1 --> V2 --> V3 --> V4 --> V5 --> V6 --> V7 --> V8 --> V9
+    subgraph DELIVERY["产品交付 · V5–V9"]
+        direction LR
+        V5("V5<br/>异步任务")
+        V6("V6<br/>SSE 与前端")
+        V7("V7<br/>容器部署")
+        V8("V8<br/>HTTPS 上线")
+        V9("V9<br/>可靠性完善")
+        V5 --> V6 --> V7 --> V8 --> V9
+    end
+
+    CORE --> DELIVERY
+
+    style CORE fill:transparent,stroke:transparent
+    style DELIVERY fill:transparent,stroke:transparent
 
     classDef done fill:#dcfce7,stroke:#15803d,color:#14532d;
     classDef active fill:#fef3c7,stroke:#b45309,color:#78350f;
