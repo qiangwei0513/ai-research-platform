@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-
+from typing import Literal
 
 class SearchItem(BaseModel):
     query: str = Field(
@@ -17,3 +17,24 @@ class SearchPlan(BaseModel):
     searches: list[SearchItem] = Field(
         description="2～3 个互补的搜索任务"
     )
+
+class SearchTaskResult(BaseModel):
+    query: str
+    reason: str
+    status: Literal["success", "empty", "failed"]
+    source_urls: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
+class SearchSource(BaseModel):
+    title: str
+    url: str
+    snippets: list[str]
+    queries: list[str]
+
+
+class SearchBundle(BaseModel):
+    goal: str
+    status: Literal["completed", "partial", "empty", "failed"]
+    tasks: list[SearchTaskResult]
+    sources: list[SearchSource]

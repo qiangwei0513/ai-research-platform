@@ -219,12 +219,12 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 
 **目标：** 用户提交问题，Go 调用 Python，Python 调用模型，最终返回答案。
 
-- [x] 初始化独立项目、Go 模块和 Python 依赖环境。
-- [x] Gin 提供 `GET /ping` 和 `POST /api/research`。
-- [x] FastAPI 提供 `GET /health` 和 `POST /research`。
-- [x] 使用 `Agent + Runner` 执行模型调用，返回 `{"result": "..."}`。
-- [x] 校验输入，处理服务不可用、无效响应与请求超时。
-- [x] 添加 README、Git 忽略规则，提交代码并推送到 GitHub。
+- [X] 初始化独立项目、Go 模块和 Python 依赖环境。
+- [X] Gin 提供 `GET /ping` 和 `POST /api/research`。
+- [X] FastAPI 提供 `GET /health` 和 `POST /research`。
+- [X] 使用 `Agent + Runner` 执行模型调用，返回 `{"result": "..."}`。
+- [X] 校验输入，处理服务不可用、无效响应与请求超时。
+- [X] 添加 README、Git 忽略规则，提交代码并推送到 GitHub。
 
 **验收：** 从 Go 的 8080 端口提交问题可得到真实回答；空白问题返回 400；停止 Python 后 Go 返回 502 且自身保持运行。
 
@@ -234,13 +234,13 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 
 **目标：** Agent 能获取外部信息，使用实际返回的资料组织回答。
 
-- [x] 用 `function_tool` 封装 `search_notes`，搜索本地项目笔记。
-- [x] 接入 Tavily，提供 `search_web` 和可独立调用的 `fetch_web_results`。
-- [x] 返回标题、URL 和内容片段；每次最多 3 条，每条最多 1500 个字符。
-- [x] 在提示词中区分本地笔记搜索、联网搜索及引用规则。
-- [x] 打印工具执行与来源日志，处理搜索超时、认证失败和网络异常。
-- [x] 自动加载 `agent-service/.env`，配置模型与搜索服务的 Key。
-- [x] 记录搜索片段的限制，提供单独搜索与完整接口测试命令。
+- [X] 用 `function_tool` 封装 `search_notes`，搜索本地项目笔记。
+- [X] 接入 Tavily，提供 `search_web` 和可独立调用的 `fetch_web_results`。
+- [X] 返回标题、URL 和内容片段；每次最多 3 条，每条最多 1500 个字符。
+- [X] 在提示词中区分本地笔记搜索、联网搜索及引用规则。
+- [X] 打印工具执行与来源日志，处理搜索超时、认证失败和网络异常。
+- [X] 自动加载 `agent-service/.env`，配置模型与搜索服务的 Key。
+- [X] 记录搜索片段的限制，提供单独搜索与完整接口测试命令。
 
 **验收：** 本地笔记问题可引用笔记编号；联网问题触发真实搜索并返回来源链接；能从日志核对工具执行和来源。
 本阶段不包含网页全文读取，也不代表已经自动验证引用与结论的一致性。
@@ -253,10 +253,10 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 
 #### V2.1：生成结构化搜索计划
 
-- [x] 定义 `SearchItem` 与 `SearchPlan`。
-- [x] Planner 输出研究目标、2～3 个搜索词及其目的。
-- [x] 检查空内容、任务数量、完全重复的搜索词，并设置规划超时。
-- [x] 提供 `python -m research.plan_demo` 独立验证入口。
+- [X] 定义 `SearchItem` 与 `SearchPlan`。
+- [X] Planner 输出研究目标、2～3 个搜索词及其目的。
+- [X] 检查空内容、任务数量、完全重复的搜索词，并设置规划超时。
+- [X] 提供 `python -m research.plan_demo` 独立验证入口。
 - [ ] 确认多个研究问题都能生成结构正确、搜索角度互补的计划。
 
 当前 Planner 可独立运行，尚未接入 HTTP 研究流程。在 `agent-service` 目录验证：
@@ -265,14 +265,18 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 uv run python -m research.plan_demo "你的研究问题"
 ```
 
-#### V2.2：并行搜索与资料汇总 · 下一步
+#### V2.2：并行搜索与资料汇总 
 
-- [ ] 复用 `fetch_web_results`，按照计划执行每个搜索任务。
-- [ ] 使用异步并发并限制并发数；搜索执行层先使用现有函数，按需再增加独立 Search Agent。
-- [ ] 保留每次搜索的查询词、搜索目的、来源标题、URL 和片段。
-- [ ] 按 URL 去重；相同来源保留与不同搜索任务的关联。
-- [ ] 区分搜索成功、结果为空和执行失败；部分失败可继续，全失败明确返回失败。
-- [ ] 为 Writer 提供结构统一的资料集合与失败说明。
+- [X] 复用 `fetch_web_results`，按照计划执行每个搜索任务。
+- [X] 使用异步并发并限制并发数；搜索执行层先使用现有函数，按需再增加独立 Search Agent。
+- [X] 保留每次搜索的查询词、搜索目的、来源标题、URL 和片段。
+- [X] 按 URL 去重；相同来源保留与不同搜索任务的关联。
+- [X] 区分搜索成功、结果为空和执行失败；部分失败可继续，全失败明确返回失败。
+- [X] 为 Writer 提供结构统一的资料集合与失败说明。
+
+```Shell
+uv run python -m research.search_demo "研究问题"
+```
 
 #### V2.3：生成带引用的报告
 
