@@ -1,7 +1,7 @@
 import asyncio
 import sys
 
-from research.planner import create_plan
+from research.planner_agent import create_plan
 
 
 async def main():

@@ -1,9 +1,18 @@
 import asyncio
 import json
 import os
+from dataclasses import dataclass, field
 
 import httpx
-from agents import function_tool
+from agents import RunContextWrapper, function_tool
+
+
+@dataclass
+class WebSearchContext:
+    """每次 Search Agent 独立保存工具实测结果，不与其他搜索共享。"""
+
+    calls: int = 0
+    results: list[dict] = field(default_factory=list)
 
 
 async def fetch_web_results(query: str) -> dict:
@@ -76,11 +85,21 @@ async def fetch_web_results(query: str) -> dict:
 
 
 @function_tool(failure_error_function=None)
-async def search_web(query: str) -> str:
+async def search_web(ctx: RunContextWrapper, query: str) -> str:
     """联网搜索公开网页，返回标题、来源链接和内容片段。
 
     Args:
         query: 适合搜索引擎的查询词，可以包含主题、技术名称或网站限定。
     """
+    context = ctx.context
+    if isinstance(context, WebSearchContext):
+        if context.calls >= 1:
+            raise RuntimeError("每个搜索任务最多调用一次 Tavily")
+        # 在 await 之前计数，防止同时发起多个工具调用时绕过上限。
+        context.calls += 1
+
     data = await fetch_web_results(query)
-    return json.dumps(data, ensure_ascii=False)
+    output = json.dumps(data, ensure_ascii=False)
+    if isinstance(context, WebSearchContext):
+        context.results.append(data)
+    return output

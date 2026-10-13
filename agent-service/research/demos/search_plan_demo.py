@@ -2,7 +2,7 @@ import asyncio
 import sys
 from time import perf_counter
 
-from research.planner import create_plan
+from research.planner_agent import create_plan
 from research.searcher import execute_search_plan
 
 

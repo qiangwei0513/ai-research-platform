@@ -23,6 +23,8 @@ class SearchTaskResult(BaseModel):
     reason: str
     status: Literal["success", "empty", "failed"]
     source_urls: list[str] = Field(default_factory=list)
+    executed_queries: list[str] = Field(default_factory=list)
+    summary: str | None = None
     error: str | None = None
 
 
@@ -38,3 +40,18 @@ class SearchBundle(BaseModel):
     status: Literal["completed", "partial", "empty", "failed"]
     tasks: list[SearchTaskResult]
     sources: list[SearchSource]
+
+class ReportSection(BaseModel):
+    text: str = Field(
+        description="本节正文，使用中文纯文本，不包含链接或引用编号"
+    )
+    source_ids: list[int] = Field(
+        description="支持本节内容的来源编号；无依据时用空列表"
+    )
+
+
+class ReportDraft(BaseModel):
+    conclusion: ReportSection
+    analysis: ReportSection
+    applicability: ReportSection
+    limitations: ReportSection

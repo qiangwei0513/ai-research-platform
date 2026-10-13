@@ -7,7 +7,7 @@ from research.schemas import (
     SearchSource,
     SearchTaskResult,
 )
-from research.web_search import fetch_web_results
+from research.search_agent import run_search_task
 
 
 async def execute_search_plan(
@@ -28,26 +28,7 @@ async def execute_search_plan(
             print(f"[searcher] 开始搜索：{item.query}", flush=True)
 
             try:
-                data = await fetch_web_results(item.query)
-
-                sources = [
-                    SearchSource(
-                        title=hit["title"],
-                        url=hit["url"],
-                        snippets=[hit["content"]],
-                        queries=[item.query],
-                    )
-                    for hit in data["results"]
-                ]
-
-                task = SearchTaskResult(
-                    query=item.query,
-                    reason=item.reason,
-                    status="success" if sources else "empty",
-                    source_urls=list(
-                        dict.fromkeys(source.url for source in sources)
-                    ),
-                )
+                task, sources = await run_search_task(item)
 
                 print(
                     f"[searcher] 搜索结束：{item.query}，"

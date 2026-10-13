@@ -4,7 +4,7 @@
 
 ## 开发路线图：V0 → V9
 
-进度更新日期：2026-10-12。路线沿用项目最初的 V0～V9 规划，V9 是本项目第一轮完整交付的终点。
+进度更新日期：2026-10-13。路线沿用项目最初的 V0～V9 规划，V9 是本项目第一轮完整交付的终点。
 状态依据当前代码和已经确认的运行结果；没有运行验证的功能不视为验收完成。
 
 - **已完成**：阶段功能已实现，并已确认主要流程可运行。
@@ -52,6 +52,8 @@ flowchart TB
 
 ## 请求流程
 
+当前 HTTP 接口使用以下流程：
+
 ```text
 客户端
   → Go Gin（8080）
@@ -59,6 +61,27 @@ flowchart TB
   → Agent / 模型 → 按需调用本地笔记搜索或联网搜索工具
   → 返回回答
 ```
+
+命令行研究工作流已完成规划、并行搜索和报告生成，接入 HTTP 接口在 V2.4 完成：
+
+```text
+研究问题 → Planner Agent → Searcher 并行调度 Search Agent → Writer Agent → Markdown 报告
+                                            ↓
+                              search_web 工具 → Tavily → 搜索片段与摘要
+```
+
+这是由 Python 代码按固定顺序编排的多 Agent 工作流，各模块通过结构化数据协作。
+
+| 模块     | 实现方式        | 职责                                                     |
+| -------- | --------------- | -------------------------------------------------------- |
+| Planner  | Agent，调用模型 | 生成研究目标和 2～3 个互补的搜索任务                     |
+| Search Agent | Agent，调用模型 | 调用 `search_web` 工具搜索 Tavily，并根据片段生成摘要 |
+| Searcher | Python 异步函数 | 并行运行 Search Agent、限制并发、按 URL 去重并记录失败 |
+| Writer   | Agent，调用模型 | 根据资料生成结构化报告草稿，由 Python 检查来源编号并排版 |
+
+研究工作流包含 Planner、Search、Writer 三种 Agent 角色。Searcher 为每个计划任务运行一次
+Search Agent，各次运行有独立的工具结果记录，由代码传递资料，无需 Agent 之间互相聊天。
+当前 HTTP 接口的 `Research Assistant` 是另一条独立流程，尚未切换到这套研究工作流。
 
 ## 项目结构
 
@@ -73,17 +96,38 @@ ai-research-platform/
 │   ├── main.py
 │   ├── research/
 │   │   ├── __init__.py
-│   │   ├── research_agent.py
-│   │   ├── schemas.py        # 结构化搜索计划
-│   │   ├── planner.py        # 研究规划 Agent
-│   │   ├── plan_demo.py      # Planner 独立验证入口
+│   │   ├── research_agent.py # 当前 HTTP 接口使用的问答 Agent
+│   │   ├── schemas.py        # 搜索计划、资料集合与报告结构
+│   │   ├── planner_agent.py  # 研究规划 Agent
+│   │   ├── search_agent.py   # 调用搜索工具并总结资料的 Agent
+│   │   ├── writer_agent.py   # 写作 Agent、来源编号校验与报告排版
+│   │   ├── searcher.py       # 并行调度 Search Agent、去重与资料汇总
 │   │   ├── tools.py          # 本地笔记搜索
-│   │   └── web_search.py     # Tavily 联网搜索
+│   │   ├── web_search.py     # Tavily 联网搜索工具
+│   │   └── demos/            # 手动运行的演示与验收入口
+│   │       ├── __init__.py
+│   │       ├── planner_agent_demo.py # 单独验证 Planner Agent
+│   │       ├── search_agent_demo.py  # 单独验证 Search Agent
+│   │       ├── search_plan_demo.py   # 规划 → 并行搜索
+│   │       └── report_demo.py        # 规划 → 搜索 → 写作
+│   ├── tests/               # 自动化离线测试
+│   │   └── test_search_agent.py
 │   ├── pyproject.toml
 │   └── uv.lock
 ├── .gitignore
 └── README.md
 ```
+
+Agent 定义统一放在 `*_agent.py` 中；`searcher.py` 是并行调度与汇总模块，不是独立 Agent。
+手动演示集中在 `research/demos/`，自动化测试集中在 `tests/`。
+在 `agent-service` 目录使用以下命令运行演示（会调用相应的模型或搜索服务）：
+
+| 验证范围 | 命令 |
+| --- | --- |
+| Planner Agent | `uv run python -m research.demos.planner_agent_demo "研究问题"` |
+| Search Agent | `uv run python -m research.demos.search_agent_demo "搜索词"` |
+| 规划与并行搜索 | `uv run python -m research.demos.search_plan_demo "研究问题"` |
+| 完整报告流程 | `uv run python -m research.demos.report_demo "研究问题"` |
 
 ## 开发环境
 
@@ -188,14 +232,88 @@ curl -i --max-time 140 \
 uv run python -c 'import asyncio, json; from research.web_search import fetch_web_results; result = asyncio.run(fetch_web_results("site:go.dev context cancellation")); print(json.dumps(result, ensure_ascii=False, indent=2))'
 ```
 
+## 单独测试 Search Agent
+
+在 `agent-service` 目录执行：
+
+```bash
+uv run python -m research.demos.search_agent_demo "site:go.dev context cancellation"
+```
+
+`search_web` 使用 `@function_tool` 将现有 Tavily 搜索封装为模型可调用的函数工具。
+Search Agent 接收搜索词与目的，可微调搜索词，然后调用工具并生成简短摘要。
+这条路径使用自己的 Tavily 配置，不依赖模型服务支持 OpenAI 托管的 `WebSearchTool`。
+
+成功时会看到 `[search_agent]`、`[tool] search_web` 和 `[source]` 日志，最终 JSON 包含：
+
+- `task.query` / `reason`：原始计划中的搜索词和目的。
+- `task.executed_queries`：工具实际执行的搜索词。
+- `task.summary`：模型根据搜索片段生成的摘要。
+- `sources`：工具实际返回的标题、URL 和原始片段。
+
+每次运行使用独立的 `WebSearchContext` 保存真实工具结果，来源信息不从模型摘要中提取。
+模型没有实际完成工具调用时，任务会失败；工具返回空结果时记为 `empty`，摘要置空。
+Search Agent 每个任务最多调用一次 Tavily，最多生成 1200 字符摘要。
+当前模型服务的思考模式不支持 `tool_choice="required"`，因此使用 `auto`，
+再由代码检查工具是否真正执行；仅返回一段回答不算搜索成功。
+
+相较直接调用搜索 API，现在每个搜索任务还需要模型决定工具调用并生成摘要，因此耗时和模型用量会增加。
+完整规划与并行搜索仍可通过 `python -m research.demos.search_plan_demo "研究问题"` 验证。
+
+验证记录（2026-10-13）：单个 Search Agent 已真实调用 Tavily，返回 3 条来源并生成摘要。
+离线测试覆盖工具执行、空结果、跳过工具、调用次数上限、摘要长度、超时、取消、并发与失败汇总，
+以及原有 HTTP Agent 在不传搜索上下文时的兼容性。在 `agent-service` 目录运行：
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+## 生成带引用的研究报告
+
+完成依赖安装和 `.env` 配置后，在项目根目录执行：
+
+```bash
+cd agent-service
+uv run python -m research.demos.report_demo "研究蝴蝶效应"
+```
+
+该命令直接调用模型与 Tavily，无需启动 Go 或 FastAPI。终端依次显示 `[planner]`、
+`[searcher]`、`[search_agent]`、`[writer]` 日志，最后输出包含结论、分析、适用条件、局限与资料缺口、
+搜索状态说明和来源列表的 Markdown 报告。当前报告输出到终端，尚未自动保存或入库。
+
+Writer 接收原始问题、搜索计划、资料以及搜索失败信息，输出 `ReportDraft`。
+搜索任务中的 `summary` 作为辅助摘要传给 Writer，原始搜索片段仍用于核对事实与引用；摘要不作为独立来源。
+每节包含正文和 `source_ids`；Python 校验编号后，使用实际搜索结果中的 URL 生成引用链接。
+出现未知来源编号、完全没有引用、空正文或正文超长时，会拒绝返回报告。
+来源编号检查通过，只代表引用来源存在，不代表来源在语义上支持该节所有结论。
+
+部分搜索失败时，只要还有可用片段，就继续写作，并在报告中记录失败；
+全部搜索失败或没有可用片段时，停止写作。失败表示本次未能完成检索，不表示不存在相关资料。
+
+当前运行限制：
+
+| 项目        | 限制                                                                           |
+| ----------- | ------------------------------------------------------------------------------ |
+| Planner     | 45 秒超时，生成 2～3 个搜索任务                                                |
+| Searcher    | 每次研究默认最多同时运行 2 个 Search Agent |
+| Search Agent | 每任务 90 秒（包括模型调用和搜索），`max_turns=3`，`max_tokens=10000`；工具最多调用一次，单次 Tavily 搜索仍限时 25 秒 |
+| Writer 资料 | 最多 9 个来源，每个来源最多 2 个片段，每段最多 900 字符                        |
+| Writer 输入 | 序列化后的完整输入最多 30000 字符，超出则报错                                  |
+| Writer 输出 | `max_tokens=10000`；提示词要求每节不超过 1000 字，程序检查每节最多 1500 字符 |
+| Writer 调用 | 60 秒超时，`max_turns=1`                                                     |
+
+命令行流程目前使用各阶段的超时，没有统一的整体超时；V2.4 会协调完整流程与 HTTP 超时。
+token 数和汉字数不同。若出现 `response.incomplete` 且原因为 `max_output_tokens`，
+表示模型输出触及 token 上限；可缩短报告要求，或在模型服务支持的范围内调整 Writer 的输出预算。
+
 ## 联网搜索的当前限制
 
 - 当前使用 Tavily 的 `basic` 搜索，只读取返回的内容片段，不主动打开来源网页或抓取全文。
-- 每条片段还会截取前 1500 个字符，因此可能缺少完整上下文；有来源链接不代表已阅读或核验全文。
+- 搜索层每条片段截取前 1500 个字符，Writer 输入还会进一步截取为每段最多 900 字符，因此可能缺少完整上下文；有来源链接不代表已阅读或核验全文。
 - Agent 根据片段生成回答，引用准确性仍需核对；当前没有自动验证结论与来源是否一致。
 - 搜索结果可能为空，也不保证覆盖所有相关资料或最新信息。
-- 单次搜索操作设置了 25 秒期限，仍受整个 Agent 执行的 120 秒超时限制。
-- 搜索工具异常会向外抛出，当前由 Python 接口返回 500，再由 Go 转为 502；具体原因查看 Python 日志。
+- 单次搜索操作设置了 25 秒期限；通过当前 HTTP 接口调用时，还受整个 Agent 执行的 120 秒超时限制。
+- 当前 HTTP 流程中的搜索工具异常会向外抛出，由 Python 接口返回 500，再由 Go 转为 502；具体原因查看 Python 日志。命令行研究流程由 Searcher 记录各任务失败，并按剩余资料决定是否继续写作。
 
 ## Go 接口状态码
 
@@ -256,35 +374,39 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 - [X] 定义 `SearchItem` 与 `SearchPlan`。
 - [X] Planner 输出研究目标、2～3 个搜索词及其目的。
 - [X] 检查空内容、任务数量、完全重复的搜索词，并设置规划超时。
-- [X] 提供 `python -m research.plan_demo` 独立验证入口。
-- [ ] 确认多个研究问题都能生成结构正确、搜索角度互补的计划。
+- [X] 提供 `python -m research.demos.planner_agent_demo` 独立验证入口。
+- [X] 确认多个研究问题都能生成结构正确、搜索角度互补的计划。
 
 当前 Planner 可独立运行，尚未接入 HTTP 研究流程。在 `agent-service` 目录验证：
 
 ```bash
-uv run python -m research.plan_demo "你的研究问题"
+uv run python -m research.demos.planner_agent_demo "你的研究问题"
 ```
 
-#### V2.2：并行搜索与资料汇总 
+#### V2.2：并行搜索与资料汇总
 
 - [X] 复用 `fetch_web_results`，按照计划执行每个搜索任务。
-- [X] 使用异步并发并限制并发数；搜索执行层先使用现有函数，按需再增加独立 Search Agent。
+- [X] 新增 Search Agent，调用 Tavily 函数工具并生成摘要；Searcher 使用异步并发并限制同时运行数量。
 - [X] 保留每次搜索的查询词、搜索目的、来源标题、URL 和片段。
 - [X] 按 URL 去重；相同来源保留与不同搜索任务的关联。
 - [X] 区分搜索成功、结果为空和执行失败；部分失败可继续，全失败明确返回失败。
 - [X] 为 Writer 提供结构统一的资料集合与失败说明。
+- [X] 保存实际工具结果、实际查询词与摘要；校验工具确实执行，并提供单个 Search Agent 验证入口。
 
 ```Shell
-uv run python -m research.search_demo "研究问题"
+uv run python -m research.demos.search_plan_demo "研究问题"
 ```
 
 #### V2.3：生成带引用的报告
 
-- [ ] 新增 Writer Agent，输入研究问题、计划、资料与搜索失败信息。
-- [ ] 输出包含结论、分析、适用条件、局限和来源的 Markdown 报告。
-- [ ] 资料不足时明确说明；不把搜索失败表述成“没有相关资料”。
-- [ ] 检查报告引用的 URL 是否存在于实际资料中；语义上是否支持结论仍需单独评估。
-- [ ] 控制输入资料长度与输出篇幅，避免无界增长。
+- [X] 新增 Writer Agent，输入研究问题、计划、资料与搜索失败信息。
+- [X] 输出包含结论、分析、适用条件、局限和来源的 Markdown 报告。
+- [X] 资料不足时明确说明；不把搜索失败表述成“没有相关资料”。
+- [X] 校验报告的来源编号，并使用实际资料中的 URL 生成链接；语义上是否支持结论仍需单独评估。
+- [X] 控制输入资料长度与输出篇幅，避免无界增长。
+- [X] 提供 `python -m research.demos.report_demo`，串联规划、搜索与写作。
+
+运行方式与限制见[生成带引用的研究报告](#生成带引用的研究报告)。
 
 #### V2.4：接入服务并验收
 
