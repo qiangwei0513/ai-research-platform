@@ -3,6 +3,7 @@ import asyncio
 from agents import Agent, Runner
 
 from research.schemas import SearchPlan
+from research.timeouts import PLANNER_TIMEOUT
 
 
 planner_agent = Agent(
@@ -32,7 +33,7 @@ async def create_plan(query: str) -> SearchPlan:
 
     print("[planner] 开始生成搜索计划", flush=True)
 
-    async with asyncio.timeout(45):
+    async with asyncio.timeout(PLANNER_TIMEOUT):
         result = await Runner.run(
             planner_agent,
             query,

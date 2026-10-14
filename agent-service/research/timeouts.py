@@ -1,0 +1,9 @@
+"""单位为秒；Go 的 HTTP 等待时间应比对应的 Python 总预算多留 10 秒。"""
+
+CHAT_TIMEOUT = 120
+PLANNER_TIMEOUT = 45
+SEARCH_AGENT_TIMEOUT = 90
+# 最多 3 个任务、并发 2：预留两轮任务和少量汇总时间。
+SEARCH_STAGE_TIMEOUT = 185
+WRITER_TIMEOUT = 60
+RESEARCH_TIMEOUT = 300

@@ -6,6 +6,7 @@ from urllib.parse import urlsplit
 from agents import Agent, ModelSettings, Runner
 
 from research.schemas import ReportDraft, SearchBundle, SearchPlan
+from research.timeouts import WRITER_TIMEOUT
 
 
 writer_agent = Agent(
@@ -214,7 +215,7 @@ async def write_report(
         flush=True,
     )
 
-    async with asyncio.timeout(60):
+    async with asyncio.timeout(WRITER_TIMEOUT):
         result = await Runner.run(
             writer_agent,
             prompt,

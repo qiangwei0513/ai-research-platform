@@ -5,9 +5,7 @@ from agents import Agent, ModelSettings, Runner
 
 from research.schemas import SearchItem, SearchSource, SearchTaskResult
 from research.web_search import WebSearchContext, search_web
-
-
-SEARCH_AGENT_TIMEOUT = 90
+from research.timeouts import SEARCH_AGENT_TIMEOUT
 
 search_agent = Agent(
     name="Research Searcher",

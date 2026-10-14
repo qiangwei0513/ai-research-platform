@@ -12,14 +12,15 @@ NOTES = [
             "Go 使用 Gin，在本机 8080 端口提供 POST /api/research。"
             "Python 使用 FastAPI，在本机 8000 端口提供 POST /research。"
             "Go 通过 HTTP 调用 Python，Python 使用 Agents SDK 调用模型。"
+            "mode 默认为 chat，使用单个问答 Agent；mode=research 时运行 Planner、Search、Writer 研究工作流。"
         ),
     },
     {
         "id": "note-002",
         "title": "请求超时",
         "content": (
-            "Python 的 Agent 执行超时设置为 120 秒。"
-            "Go HTTP 客户端的超时设置为 130 秒。"
+            "普通问答的 Python 超时为 120 秒，Go 超时为 130 秒。"
+            "完整研究的 Python 总超时为 300 秒，Go 超时为 310 秒。"
             "Go 比 Python 多等待 10 秒，为通信和错误返回留出时间。"
         ),
     },

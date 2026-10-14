@@ -1,9 +1,7 @@
 import asyncio
 import sys
 
-from research.planner_agent import create_plan
-from research.searcher import execute_search_plan
-from research.writer_agent import write_report
+from research.workflow import WorkflowError, run_research_workflow
 
 
 async def main():
@@ -13,13 +11,10 @@ async def main():
         else "研究 Go context 如何实现超时控制和取消传播"##默认问题
     )
 
-    plan = await create_plan(query)
-
-    bundle = await execute_search_plan(plan)
-
-    report = await write_report(query, plan, bundle)
-
-    print("\n" + report)
+    outcome = await run_research_workflow(query)
+    print("\n搜索计划：")
+    print(outcome.plan.model_dump_json(indent=2))
+    print("\n" + outcome.result)
 
 
 if __name__ == "__main__":
@@ -31,7 +26,7 @@ if __name__ == "__main__":
             file=sys.stderr,
         )
         raise SystemExit(1)
-    except ValueError as exc:
+    except (ValueError, WorkflowError) as exc:
         print(
             f"无法生成报告：{exc}",
             file=sys.stderr,

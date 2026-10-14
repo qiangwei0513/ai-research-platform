@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,17 +19,32 @@ import (
 // 接收客户端提交的问题。
 type ResearchRequest struct {
 	Query string `json:"query"`
+	Mode  string `json:"mode"`
 }
 
 // 接收 Python 返回的答案，也作为 Go 的响应格式。
 type ResearchResponse struct {
-	Result string `json:"result"`
+	Result string          `json:"result"`
+	Mode   string          `json:"mode"`
+	Plan   json.RawMessage `json:"plan,omitempty"`
+	Search json.RawMessage `json:"search,omitempty"`
 }
 
 // 创建一个可以重复使用的 HTTP 客户端。
-// Python 的执行超时是 120 秒，这里多留一点通信时间。
+// 普通问答：Python 120 秒，Go 多留 10 秒通信时间。
 var agentClient = &http.Client{
 	Timeout: 130 * time.Second,
+}
+
+// 完整研究：Python 总预算 300 秒，Go 等待 310 秒。
+var researchAgentClient = &http.Client{Timeout: 310 * time.Second}
+var agentServiceURL = envOrDefault("AGENT_SERVICE_URL", "http://127.0.0.1:8000/research")
+
+func envOrDefault(name, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func main() {
@@ -41,7 +58,7 @@ func main() {
 
 	r.POST("/api/research", handleResearch)
 
-	if err := r.Run("127.0.0.1:8080"); err != nil {
+	if err := r.Run(envOrDefault("GO_ADDR", "127.0.0.1:8080")); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -58,6 +75,14 @@ func handleResearch(c *gin.Context) {
 
 	// 2. 校验问题：去掉首尾空白，限制为 1～5000 个字符。
 	input.Query = strings.TrimSpace(input.Query)
+	input.Mode = strings.TrimSpace(input.Mode)
+	if input.Mode == "" {
+		input.Mode = "chat"
+	}
+	if input.Mode != "chat" && input.Mode != "research" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "mode 必须是 chat 或 research"})
+		return
+	}
 	length := utf8.RuneCountInString(input.Query)
 
 	if length == 0 || length > 5000 {
@@ -81,7 +106,7 @@ func handleResearch(c *gin.Context) {
 	req, err := http.NewRequestWithContext(
 		c.Request.Context(),
 		http.MethodPost,
-		"http://127.0.0.1:8000/research",
+		agentServiceURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
@@ -95,7 +120,11 @@ func handleResearch(c *gin.Context) {
 	req.Header.Set("Content-Type", "application/json")
 
 	// 5. 发送请求，等待 Python 响应。
-	resp, err := agentClient.Do(req)
+	client := agentClient
+	if input.Mode == "research" {
+		client = researchAgentClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		handleAgentError(c, err)
 		return
@@ -103,18 +132,26 @@ func handleResearch(c *gin.Context) {
 	defer resp.Body.Close()
 
 	// 6. 检查 Python 返回的 HTTP 状态码。
-	if resp.StatusCode == http.StatusGatewayTimeout {
-		c.JSON(http.StatusGatewayTimeout, gin.H{
-			"error": "Agent 执行超时，请稍后重试",
-		})
-		return
-	}
-
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("Python 服务返回异常状态码: %d", resp.StatusCode)
-		c.JSON(http.StatusBadGateway, gin.H{
-			"error": "Agent 服务执行失败，请查看 Python 服务日志",
-		})
+		status := http.StatusBadGateway
+		message := "Agent 服务执行失败，请查看 Python 服务日志"
+		if resp.StatusCode == http.StatusGatewayTimeout {
+			status = http.StatusGatewayTimeout
+			message = "Agent 执行超时，请稍后重试"
+		}
+		var failure struct {
+			Detail struct {
+				Code    string `json:"code"`
+				Stage   string `json:"stage"`
+				Message string `json:"message"`
+			} `json:"detail"`
+		}
+		if err := json.NewDecoder(io.LimitReader(resp.Body, 65536)).Decode(&failure); err == nil && failure.Detail.Code != "" {
+			c.JSON(status, gin.H{"error": failure.Detail.Message, "code": failure.Detail.Code, "stage": failure.Detail.Stage})
+		} else {
+			c.JSON(status, gin.H{"error": message})
+		}
 		return
 	}
 

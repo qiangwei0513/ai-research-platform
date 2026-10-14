@@ -4,13 +4,9 @@
 
 ## 开发路线图：V0 → V9
 
-进度更新日期：2026-10-13。路线沿用项目最初的 V0～V9 规划，V9 是本项目第一轮完整交付的终点。
-状态依据当前代码和已经确认的运行结果；没有运行验证的功能不视为验收完成。
+进度更新日期：2026-10-14。路线沿用项目最初的 V0～V9 规划，V9 是本项目第一轮完整交付的终点。
 
-- **已完成**：阶段功能已实现，并已确认主要流程可运行。
-- **进行中**：部分功能已实现，仍有开发或验收工作。
-- **待开发**：计划目标，当前尚未实现。
-- 下方任务清单的 `[x]` 表示该项已实现或已完成；阶段是否结束还要看验收标准。
+图中的 `✓` 和下方清单的 `[x]` 表示已实现的目标，未勾选项为后续计划。
 
 ```mermaid
 flowchart TB
@@ -18,7 +14,7 @@ flowchart TB
         direction LR
         V0("V0 ✓<br/>服务闭环")
         V1("V1 ✓<br/>工具搜索")
-        V2("V2 进行中<br/>研究工作流")
+        V2("V2 ✓<br/>研究工作流")
         V3("V3<br/>MySQL")
         V4("V4<br/>Redis")
         V0 --> V1 --> V2 --> V3 --> V4
@@ -40,10 +36,8 @@ flowchart TB
     style DELIVERY fill:transparent,stroke:transparent
 
     classDef done fill:#dcfce7,stroke:#15803d,color:#14532d;
-    classDef active fill:#fef3c7,stroke:#b45309,color:#78350f;
     classDef planned fill:#f1f5f9,stroke:#64748b,color:#0f172a;
-    class V0,V1 done;
-    class V2 active;
+    class V0,V1,V2 done;
     class V3,V4,V5,V6,V7,V8,V9 planned;
 ```
 
@@ -52,17 +46,17 @@ flowchart TB
 
 ## 请求流程
 
-当前 HTTP 接口使用以下流程：
+HTTP 接口通过 `mode` 选择流程；不传时默认使用 `chat`，兼容原有调用：
 
 ```text
 客户端
   → Go Gin（8080）
   → Python FastAPI（8000）
-  → Agent / 模型 → 按需调用本地笔记搜索或联网搜索工具
-  → 返回回答
+  ├─ mode=chat     → Research Assistant → 按需调用工具 → 返回回答
+  └─ mode=research → 统一研究流程 → 返回报告、计划和搜索资料
 ```
 
-命令行研究工作流已完成规划、并行搜索和报告生成，接入 HTTP 接口在 V2.4 完成：
+完整研究通过 `workflow.py` 编排，HTTP 与命令行共用：
 
 ```text
 研究问题 → Planner Agent → Searcher 并行调度 Search Agent → Writer Agent → Markdown 报告
@@ -72,16 +66,16 @@ flowchart TB
 
 这是由 Python 代码按固定顺序编排的多 Agent 工作流，各模块通过结构化数据协作。
 
-| 模块     | 实现方式        | 职责                                                     |
-| -------- | --------------- | -------------------------------------------------------- |
-| Planner  | Agent，调用模型 | 生成研究目标和 2～3 个互补的搜索任务                     |
-| Search Agent | Agent，调用模型 | 调用 `search_web` 工具搜索 Tavily，并根据片段生成摘要 |
-| Searcher | Python 异步函数 | 并行运行 Search Agent、限制并发、按 URL 去重并记录失败 |
-| Writer   | Agent，调用模型 | 根据资料生成结构化报告草稿，由 Python 检查来源编号并排版 |
+| 模块         | 实现方式        | 职责                                                     |
+| ------------ | --------------- | -------------------------------------------------------- |
+| Planner      | Agent，调用模型 | 生成研究目标和 2～3 个互补的搜索任务                     |
+| Search Agent | Agent，调用模型 | 调用`search_web` 工具搜索 Tavily，并根据片段生成摘要   |
+| Searcher     | Python 异步函数 | 并行运行 Search Agent、限制并发、按 URL 去重并记录失败   |
+| Writer       | Agent，调用模型 | 根据资料生成结构化报告草稿，由 Python 检查来源编号并排版 |
 
 研究工作流包含 Planner、Search、Writer 三种 Agent 角色。Searcher 为每个计划任务运行一次
 Search Agent，各次运行有独立的工具结果记录，由代码传递资料，无需 Agent 之间互相聊天。
-当前 HTTP 接口的 `Research Assistant` 是另一条独立流程，尚未切换到这套研究工作流。
+`Research Assistant` 用于普通问答；完整研究由 `mode="research"` 显式触发。
 
 ## 项目结构
 
@@ -102,6 +96,8 @@ ai-research-platform/
 │   │   ├── search_agent.py   # 调用搜索工具并总结资料的 Agent
 │   │   ├── writer_agent.py   # 写作 Agent、来源编号校验与报告排版
 │   │   ├── searcher.py       # 并行调度 Search Agent、去重与资料汇总
+│   │   ├── workflow.py       # 统一研究流程、阶段日志、失败与超时处理
+│   │   ├── timeouts.py       # Python 各阶段和整体时间预算
 │   │   ├── tools.py          # 本地笔记搜索
 │   │   ├── web_search.py     # Tavily 联网搜索工具
 │   │   └── demos/            # 手动运行的演示与验收入口
@@ -110,8 +106,6 @@ ai-research-platform/
 │   │       ├── search_agent_demo.py  # 单独验证 Search Agent
 │   │       ├── search_plan_demo.py   # 规划 → 并行搜索
 │   │       └── report_demo.py        # 规划 → 搜索 → 写作
-│   ├── tests/               # 自动化离线测试
-│   │   └── test_search_agent.py
 │   ├── pyproject.toml
 │   └── uv.lock
 ├── .gitignore
@@ -119,15 +113,15 @@ ai-research-platform/
 ```
 
 Agent 定义统一放在 `*_agent.py` 中；`searcher.py` 是并行调度与汇总模块，不是独立 Agent。
-手动演示集中在 `research/demos/`，自动化测试集中在 `tests/`。
+手动演示集中在 `research/demos/`。
 在 `agent-service` 目录使用以下命令运行演示（会调用相应的模型或搜索服务）：
 
-| 验证范围 | 命令 |
-| --- | --- |
-| Planner Agent | `uv run python -m research.demos.planner_agent_demo "研究问题"` |
-| Search Agent | `uv run python -m research.demos.search_agent_demo "搜索词"` |
-| 规划与并行搜索 | `uv run python -m research.demos.search_plan_demo "研究问题"` |
-| 完整报告流程 | `uv run python -m research.demos.report_demo "研究问题"` |
+| 验证范围       | 命令                                                              |
+| -------------- | ----------------------------------------------------------------- |
+| Planner Agent  | `uv run python -m research.demos.planner_agent_demo "研究问题"` |
+| Search Agent   | `uv run python -m research.demos.search_agent_demo "搜索词"`    |
+| 规划与并行搜索 | `uv run python -m research.demos.search_plan_demo "研究问题"`   |
+| 完整报告流程   | `uv run python -m research.demos.report_demo "研究问题"`        |
 
 ## 开发环境
 
@@ -195,7 +189,15 @@ go run .
 
 修改 Go 代码后，需要重新启动 Go 服务。
 
+Go 可通过环境变量配置监听地址和 Python 接口，默认值与以上启动命令一致：
+
+```bash
+GO_ADDR=127.0.0.1:8080 AGENT_SERVICE_URL=http://127.0.0.1:8000/research go run .
+```
+
 ## 发起研究请求
+
+普通问答（省略 `mode` 或指定 `"mode":"chat"`）：
 
 ```bash
 curl -i --max-time 140 \
@@ -208,9 +210,36 @@ curl -i --max-time 140 \
 
 ```json
 {
-  "result": "模型生成的回答"
+  "result": "模型生成的回答",
+  "mode": "chat"
 }
 ```
+
+完整研究（显式指定 `"mode":"research"`）：
+
+```bash
+curl -i --max-time 320 \
+  -X POST http://127.0.0.1:8080/api/research \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"研究 Go context 的取消传播机制，以官方文档为依据。","mode":"research"}'
+```
+
+研究模式的成功响应包含以下字段：
+
+| 字段       | 内容                                                   |
+| ---------- | ------------------------------------------------------ |
+| `result` | 带引用的 Markdown 报告，保留原有答案字段               |
+| `mode`   | `research`                                           |
+| `plan`   | 研究目标和搜索任务                                     |
+| `search` | 搜索状态、每个任务的摘要与失败信息、去重后的来源和片段 |
+
+部分搜索失败但仍有可用资料时，HTTP 返回 200，`search.status` 为 `partial`，报告保留失败说明。
+全部搜索失败返回 502，`code` 为 `search_failed`；没有可用片段返回 502，`code` 为 `no_sources`。
+阶段或整体超时返回 504，`code` 为 `research_timeout`，`stage` 标明超时时所处阶段。
+其他研究阶段错误返回 502；不把空报告或搜索失败当作正常报告返回。
+
+研究流程会打印带 `run` 编号的 `[workflow]` 日志，记录各阶段的开始、结束、耗时，
+以及失败时的错误类型或错误码。该编号用于本次 Python 流程日志关联，尚未贯通 Go 和后续任务存储。
 
 ## 测试联网搜索
 
@@ -260,14 +289,6 @@ Search Agent 每个任务最多调用一次 Tavily，最多生成 1200 字符摘
 相较直接调用搜索 API，现在每个搜索任务还需要模型决定工具调用并生成摘要，因此耗时和模型用量会增加。
 完整规划与并行搜索仍可通过 `python -m research.demos.search_plan_demo "研究问题"` 验证。
 
-验证记录（2026-10-13）：单个 Search Agent 已真实调用 Tavily，返回 3 条来源并生成摘要。
-离线测试覆盖工具执行、空结果、跳过工具、调用次数上限、摘要长度、超时、取消、并发与失败汇总，
-以及原有 HTTP Agent 在不传搜索上下文时的兼容性。在 `agent-service` 目录运行：
-
-```bash
-uv run python -m unittest discover -s tests -v
-```
-
 ## 生成带引用的研究报告
 
 完成依赖安装和 `.env` 配置后，在项目根目录执行：
@@ -292,17 +313,19 @@ Writer 接收原始问题、搜索计划、资料以及搜索失败信息，输�
 
 当前运行限制：
 
-| 项目        | 限制                                                                           |
-| ----------- | ------------------------------------------------------------------------------ |
-| Planner     | 45 秒超时，生成 2～3 个搜索任务                                                |
-| Searcher    | 每次研究默认最多同时运行 2 个 Search Agent |
+| 项目         | 限制                                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| Planner      | 45 秒超时，生成 2～3 个搜索任务                                                                                           |
+| Searcher     | 每次研究默认最多同时运行 2 个 Search Agent                                                                                |
 | Search Agent | 每任务 90 秒（包括模型调用和搜索），`max_turns=3`，`max_tokens=10000`；工具最多调用一次，单次 Tavily 搜索仍限时 25 秒 |
-| Writer 资料 | 最多 9 个来源，每个来源最多 2 个片段，每段最多 900 字符                        |
-| Writer 输入 | 序列化后的完整输入最多 30000 字符，超出则报错                                  |
-| Writer 输出 | `max_tokens=10000`；提示词要求每节不超过 1000 字，程序检查每节最多 1500 字符 |
-| Writer 调用 | 60 秒超时，`max_turns=1`                                                     |
+| 完整搜索阶段 | 185 秒，覆盖最多 3 个任务、并发 2 时的两轮执行                                                                            |
+| Writer 资料  | 最多 9 个来源，每个来源最多 2 个片段，每段最多 900 字符                                                                   |
+| Writer 输入  | 序列化后的完整输入最多 30000 字符，超出则报错                                                                             |
+| Writer 输出  | `max_tokens=10000`；提示词要求每节不超过 1000 字，程序检查每节最多 1500 字符                                            |
+| Writer 调用  | 60 秒超时，`max_turns=1`                                                                                                |
 
-命令行流程目前使用各阶段的超时，没有统一的整体超时；V2.4 会协调完整流程与 HTTP 超时。
+HTTP 和命令行完整研究共用 300 秒整体预算，到期后取消正在等待的阶段和搜索任务。
+该预算覆盖规划、排队、搜索和写作；不是每个阶段都可以额外使用 300 秒。
 token 数和汉字数不同。若出现 `response.incomplete` 且原因为 `max_output_tokens`，
 表示模型输出触及 token 上限；可缩短报告要求，或在模型服务支持的范围内调整 Writer 的输出预算。
 
@@ -312,28 +335,44 @@ token 数和汉字数不同。若出现 `response.incomplete` 且原因为 `max_
 - 搜索层每条片段截取前 1500 个字符，Writer 输入还会进一步截取为每段最多 900 字符，因此可能缺少完整上下文；有来源链接不代表已阅读或核验全文。
 - Agent 根据片段生成回答，引用准确性仍需核对；当前没有自动验证结论与来源是否一致。
 - 搜索结果可能为空，也不保证覆盖所有相关资料或最新信息。
-- 单次搜索操作设置了 25 秒期限；通过当前 HTTP 接口调用时，还受整个 Agent 执行的 120 秒超时限制。
-- 当前 HTTP 流程中的搜索工具异常会向外抛出，由 Python 接口返回 500，再由 Go 转为 502；具体原因查看 Python 日志。命令行研究流程由 Searcher 记录各任务失败，并按剩余资料决定是否继续写作。
+- 单次搜索操作设置了 25 秒期限；普通问答受 120 秒总预算限制，完整研究受 300 秒总预算限制。
+- 普通问答中的搜索工具异常会由 Python 接口返回 500，再由 Go 转为 502；完整研究由 Searcher 记录各任务失败，按剩余资料决定是否继续写作。
 
 ## Go 接口状态码
 
 | 状态码 | 含义                                       |
 | ------ | ------------------------------------------ |
 | 200    | 成功返回答案                               |
-| 400    | 请求格式错误或问题不符合要求               |
+| 400    | 请求格式错误、问题不符合要求或 mode 无效   |
 | 500    | Go 内部构造请求失败                        |
 | 502    | Agent 服务连接失败、执行失败或返回无效结果 |
 | 504    | Agent 执行或通信超时                       |
 
 问题去除首尾空白后，长度应为 1～5000 个字符。
 
-Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
+| 模式                 | Python 总预算 | Go 等待上限 | 建议 curl 上限 |
+| -------------------- | ------------- | ----------- | -------------- |
+| 普通问答`chat`     | 120 秒        | 130 秒      | 140 秒         |
+| 完整研究`research` | 300 秒        | 310 秒      | 320 秒         |
+
+## 首次服务器试运行
+
+首次服务器试运行可先在同一台机器运行 Go 和 Python：
+
+1. 拉取代码，按项目版本要求安装 Go、Python 和 uv；安装两个服务的依赖。
+2. 在服务器的 `agent-service/.env` 单独配置模型与 Tavily，使用进程管理工具保持两个服务运行。
+3. 沿用 `127.0.0.1:8000` 和 `127.0.0.1:8080` 的默认监听地址。
+4. 在本地执行 `ssh -L 18080:127.0.0.1:8080 用户名@服务器地址`，保持 SSH 连接。
+5. 把前面的 curl 地址替换为 `http://127.0.0.1:18080/api/research`，分别验证两种模式。
+
+服务器验收时检查模型与搜索服务连通性、完整报告、部分失败说明和超时返回。
+这是后端试运行；Docker Compose 和域名 HTTPS 部署仍安排在 V7、V8。
 
 ## 阶段目标与验收
 
-以下是后续开发计划，不代表功能已经存在。每完成一项更新任务清单，每通过一个阶段的验收再更新路线图状态。
+以下列出各阶段的目标、任务与验收标准，具体进度通过任务清单和路线图展示。
 
-### V0：最小服务闭环 · 已完成
+### V0：最小服务闭环
 
 **目标：** 用户提交问题，Go 调用 Python，Python 调用模型，最终返回答案。
 
@@ -348,7 +387,7 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 
 **学习重点：** HTTP 服务与客户端、JSON 编解码、异步函数、环境变量、Git 基础。
 
-### V1：工具调用与联网搜索 · 已完成
+### V1：工具调用与联网搜索
 
 **目标：** Agent 能获取外部信息，使用实际返回的资料组织回答。
 
@@ -365,7 +404,7 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 
 **学习重点：** 函数工具、模型与工具之间的数据传递、第三方 API、异步 HTTP、来源追溯。
 
-### V2：Planner → 并行搜索 → Writer · 进行中
+### V2：Planner → 并行搜索 → Writer
 
 **目标：** 对复杂研究问题先规划，再收集多组资料，最后生成有依据的报告。
 
@@ -377,7 +416,7 @@ Python Agent 执行超时为 120 秒，Go HTTP 客户端超时为 130 秒。
 - [X] 提供 `python -m research.demos.planner_agent_demo` 独立验证入口。
 - [X] 确认多个研究问题都能生成结构正确、搜索角度互补的计划。
 
-当前 Planner 可独立运行，尚未接入 HTTP 研究流程。在 `agent-service` 目录验证：
+Planner 已接入完整研究流程，也可在 `agent-service` 目录独立验证：
 
 ```bash
 uv run python -m research.demos.planner_agent_demo "你的研究问题"
@@ -410,17 +449,18 @@ uv run python -m research.demos.search_plan_demo "研究问题"
 
 #### V2.4：接入服务并验收
 
-- [ ] 用统一流程函数串联规划、搜索和写作，并接入 HTTP 研究入口。
-- [ ] 明确普通问答与完整研究的入口或模式，避免每个简单问题都执行全部步骤。
-- [ ] 重新分配各阶段超时，并协调 Python 总超时与 Go 客户端超时。
-- [ ] 记录各阶段开始、结束、耗时与失败原因。
-- [ ] 验证完整成功、部分搜索失败、全部搜索失败和整体超时。
+- [X] 用统一流程函数串联规划、搜索和写作，并接入 HTTP 研究入口。
+- [X] 明确普通问答与完整研究的入口或模式，避免每个简单问题都执行全部步骤。
+- [X] 重新分配各阶段超时，并协调 Python 总超时与 Go 客户端超时。
+- [X] 记录各阶段开始、结束、耗时与失败原因。
+- [X] 自动化测试验证完整成功、部分搜索失败、全部搜索失败和整体超时。
+- [X] 通过 Go → Python 发起真实研究请求，返回计划、资料与带引用的报告。
 
 **验收：** 一次完整研究请求能输出计划、执行多项搜索并生成有来源的报告；发生部分失败时报告说明资料缺口，全部失败时不编造报告。
 
 **学习重点：** 结构化输出、工作流编排、异步并发、失败隔离、资料管理与引用校验。
 
-### V3：MySQL 持久化与用户体系 · 待开发
+### V3：MySQL 持久化与用户体系
 
 **目标：** 研究记录可以长期保存，用户能查询自己的任务和报告。
 
@@ -436,7 +476,7 @@ uv run python -m research.demos.search_plan_demo "研究问题"
 
 **学习重点：** 数据建模、SQL、事务、迁移、分层设计、认证和权限控制。
 
-### V4：Redis 缓存与状态读取 · 待开发
+### V4：Redis 缓存与状态读取
 
 **目标：** 减少重复搜索与高频数据库查询，为异步任务阶段准备基础设施。
 
@@ -451,7 +491,7 @@ uv run python -m research.demos.search_plan_demo "研究问题"
 
 **学习重点：** 缓存键、TTL、缓存一致性、命中率与降级。任务队列在 V5 实现。
 
-### V5：异步任务与 Worker · 待开发
+### V5：异步任务与 Worker
 
 **目标：** 创建研究任务后立即返回任务 ID，后台持续执行，客户端按需查询结果。
 
@@ -467,7 +507,7 @@ uv run python -m research.demos.search_plan_demo "研究问题"
 
 **学习重点：** 队列、消费者、状态机、幂等性、重试、任务恢复。Redis 此时承担队列职责，需配置持久化与恢复策略。
 
-### V6：SSE 执行进度与最小前端 · 待开发
+### V6：SSE 执行进度与最小前端
 
 **目标：** 用户可以在网页提交研究、查看进度、阅读报告和历史记录。
 
@@ -483,7 +523,7 @@ uv run python -m research.demos.search_plan_demo "研究问题"
 
 **学习重点：** SSE、事件设计、前后端联调、连接生命周期和状态恢复。
 
-### V7：Docker Compose 本地部署 · 待开发
+### V7：Docker Compose 本地部署
 
 **目标：** 在具备容器环境的机器上，按照文档统一启动整个项目。
 
@@ -498,7 +538,7 @@ uv run python -m research.demos.search_plan_demo "研究问题"
 
 **学习重点：** 镜像、容器网络、服务发现、数据卷和多服务配置。
 
-### V8：Nginx、HTTPS 与服务器部署 · 待开发
+### V8：Nginx、HTTPS 与服务器部署
 
 **目标：** 通过自己的域名访问应用，完成一次真实部署。
 
@@ -513,7 +553,7 @@ uv run python -m research.demos.search_plan_demo "研究问题"
 
 **学习重点：** 反向代理、TLS、域名、网络边界和部署运维。
 
-### V9：可靠性与可观测性完善 · 待开发 / 首轮交付终点
+### V9：可靠性与可观测性完善
 
 **目标：** 让系统具备可解释、可维护、可演示的工程质量。
 
