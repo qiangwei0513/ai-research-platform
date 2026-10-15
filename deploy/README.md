@@ -10,6 +10,8 @@
 
 公开端口只有 80、443；8000、8080 只在容器网络内使用。服务器需要能访问模型服务、Tavily，以及构建使用的 Docker 镜像和依赖仓库。当前请求会等待报告完整生成，最长约 5 分钟；还没有后台任务队列、注册登录或数据库。
 
+如果服务器只有 **2 GiB 内存且已经运行简历、Umami 或数据库**，优先使用后面的「在开发机构建，服务器只运行」方案。镜像构建会额外占用 CPU 和内存，不应与线上站点争抢有限资源。
+
 ## 1. 安装 Docker 和 Compose
 
 在 Ubuntu / Debian 服务器上安装 Git、Docker Engine，以及 Docker Compose 插件。按照与你系统匹配的官方文档中「Install using the apt repository」步骤操作：
@@ -101,11 +103,12 @@ nano agent-service/.env
 
 ```bash
 sudo docker compose --env-file deploy/.env config --quiet
-sudo docker compose --env-file deploy/.env up -d --build
+sudo docker compose --parallel 1 --env-file deploy/.env build
+sudo docker compose --env-file deploy/.env up -d --no-build
 sudo docker compose --env-file deploy/.env ps
 ```
 
-首次构建需要下载镜像和依赖，耗时取决于服务器网络。Python 健康检查通过后 Go 才启动，Go 健康检查通过后 Caddy 才启动；健康检查只确认进程接口可响应，不检查模型 Key 和 Tavily Key 是否有效。
+首次构建需要下载镜像和依赖，耗时取决于服务器网络和配置。`--parallel 1` 让 Compose 依次构建服务，不能作为内存上限。Python 健康检查通过后 Go 才启动，Go 健康检查通过后 Caddy 才启动；健康检查只确认进程接口可响应，不检查模型 Key 和 Tavily Key 是否有效。
 
 DNS 已指向服务器且端口可访问时，Caddy 会为 `SITE_ADDRESS` 中的域名申请 HTTPS 证书并自动续期，无需再安装 Certbot。证书存放在 `caddy_data` 卷中，普通容器重建不会丢失。[Caddy 自动 HTTPS 说明](https://caddyserver.com/docs/automatic-https)
 
@@ -136,7 +139,8 @@ curl --max-time 330 https://agent.luananwei.me/api/research \
 
 ```bash
 sudo docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env config --quiet
-sudo docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env up -d --build
+sudo docker compose --parallel 1 -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env build
+sudo docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env up -d --no-build
 curl http://127.0.0.1:18080/ping
 ```
 
@@ -182,16 +186,62 @@ server {
 
 如果简历站点由宝塔、1Panel 等面板管理，在面板中新增子域名站点，反向代理到 `http://127.0.0.1:18080`，为子域名启用 HTTPS，并将代理读取超时设置为至少 320 秒。若现有反向代理本身也在容器中，它的 `127.0.0.1` 指向代理容器自身，需要用该代理支持的容器网络连接方式访问后端，不能直接套用宿主机地址。
 
+## 在开发机构建，服务器只运行
+
+以下流程适合与简历站点共用的小规格服务器，沿用上面的现有代理方案。构建放在你的电脑上，服务器只导入和运行镜像。电脑需要安装并启动 Docker Desktop。
+
+先在**服务器**确认 CPU 架构：
+
+```bash
+uname -m
+```
+
+`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`。Apple 芯片 Mac 默认是 ARM 架构，因此必须明确指定服务器的平台，不能直接上传默认构建的镜像。
+
+在**开发机的项目根目录**执行。以下以服务器为 `x86_64` 为例；如果是 `aarch64`，把第一行改为 `linux/arm64`：
+
+```bash
+AI_RESEARCH_PLATFORM=linux/amd64
+docker buildx build --platform "$AI_RESEARCH_PLATFORM" --load \
+  -t ai-research-platform-backend:latest -f deploy/backend.Dockerfile .
+docker buildx build --platform "$AI_RESEARCH_PLATFORM" --load \
+  -t ai-research-platform-agent-service:latest -f deploy/agent-service.Dockerfile .
+docker image save -o /tmp/ai-research-images.tar \
+  ai-research-platform-backend:latest ai-research-platform-agent-service:latest
+scp /tmp/ai-research-images.tar root@47.80.21.229:/tmp/
+```
+
+这两次构建依次执行。Go 使用构建机原生编译器生成目标平台程序；Python 在目标平台环境中安装依赖，在不同架构的 Mac 上可能用到 Docker Desktop 的模拟运行，耗时可能更长。[Docker 多平台构建说明](https://docs.docker.com/build/building/multi-platform/)
+
+上面的镜像名对应 `compose.yaml` 中的项目名 `ai-research-platform`。此流程不要另设 `-p` 或 `COMPOSE_PROJECT_NAME`，否则 Compose 会寻找其他名称的镜像。镜像不包含 `.env` 文件，服务器仍需要第 4 步的配置。
+
+先将同一版本的项目文件同步到服务器，保留服务器自己的 `.env`，再在**服务器**执行：
+
+```bash
+cd /opt/ai-research-platform
+docker image load -i /tmp/ai-research-images.tar
+docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env config --quiet
+docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env \
+  up -d --no-build --pull never backend agent-service
+docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env ps
+curl http://127.0.0.1:18080/ping
+```
+
+`--no-build --pull never` 只使用已经导入的镜像；缺少镜像时会报错，不会自动在服务器上开始构建。镜像导入仍需要可用内存和磁盘空间，但省去了 Go 编译和 Python 依赖安装。确认启动正常后，可删除两端的 `/tmp/ai-research-images.tar` 释放空间。
+
+代码更新时，在开发机重新构建并上传镜像，服务器再次导入、执行上述启动命令。仅修改服务环境变量时无需重新构建或上传镜像。
+
 ## 6. 日常更新和日志
 
-从 GitHub 更新并重新构建：
+在服务器上构建的方案，从 GitHub 更新后依次构建并启动；如果采用开发机构建方案，按上一节更新镜像：
 
 ```bash
 git pull --ff-only
-sudo docker compose --env-file deploy/.env up -d --build
+sudo docker compose --parallel 1 --env-file deploy/.env build
+sudo docker compose --env-file deploy/.env up -d --no-build
 ```
 
-修改 `.env` 后也执行同一个 `up -d --build` 命令，使容器使用新配置。只运行 `restart` 不会重新读取容器的环境变量。更新会中断正在执行的请求，当前版本没有任务恢复功能，尽量在无人使用时更新。
+修改 `.env` 后执行 `up -d --no-build` 即可，使容器使用新配置；只运行 `restart` 不会重新读取容器的环境变量。与已有简历共用服务器时，继续保留两个 `-f` 参数。更新会中断正在执行的请求，当前版本没有任务恢复功能，尽量在无人使用时更新。
 
 查看近期日志：
 
@@ -208,11 +258,13 @@ sudo docker compose --env-file deploy/.env logs --tail=100 caddy
 sudo docker compose --env-file deploy/.env down
 ```
 
-不要给这条命令加 `-v`，否则会删除证书等持久卷。重新启动仍使用 `up -d --build`。容器设置了 `restart: unless-stopped`，系统重启后 Docker 会恢复之前运行中的容器。
+不要给这条命令加 `-v`，否则会删除证书等持久卷。已有镜像时重新启动使用 `up -d --no-build`，无需再次构建。容器设置了 `restart: unless-stopped`，系统重启后 Docker 会恢复之前运行中的容器。
 
 ## 常见问题
 
-Go 镜像使用 `GOMAXPROCS=1` 和 `go build -p 1 -v`，串行编译依赖并输出包名，降低小规格服务器的构建压力。这只影响构建过程，不改变应用运行时并发。首次编译仍可能较慢，也不保证单个包的内存占用低于机器可用内存。
+Go 镜像使用 `-tags=nomsgpack` 排除项目没有使用的 MsgPack 功能，避免编译 `github.com/ugorji/go/codec`。现有接口使用 JSON，不受影响；将来若要新增 MsgPack 接口，需要调整这个构建标签。[Gin 官方说明](https://gin-gonic.com/zh-cn/docs/build-tags/nomsgpack/)
+
+`GOMAXPROCS=1` 和 `go build -p 1 -v` 让 Go 串行编译依赖并输出包名；BuildKit 缓存挂载保留 Go 编译结果，后端源码修改后可复用未变化的依赖。`go mod download` 只下载模块源码，不能替代编译缓存。这些措施不改变应用运行时并发，也不是构建的 CPU 或内存硬上限；首次构建和缓存清理后仍要重新编译。[Docker 缓存说明](https://docs.docker.com/build/cache/optimize/)
 
 如果构建期间 SSH 无响应，先尝试在原构建终端按 Ctrl+C 停止构建，再通过云控制台的命令助手或 VNC 检查 `free -h`、`uptime` 和内核日志。CPU 使用率高或控制台某一次内存读数，不能单独证明发生了内存耗尽；不要同时重复发起多个构建。
 
@@ -224,7 +276,7 @@ Go 镜像使用 `GOMAXPROCS=1` 和 `go build -p 1 -v`，串行编译依赖并输
 | 网页正常但研究失败 | 查看 `agent-service` 日志，确认服务器的模型和 Tavily 凭据及网络；网页不会显示完整内部异常 |
 | 返回 429 | 服务同时处理的请求过多或短时间请求过密，稍后重试 |
 | 约 5 分钟后超时 | 请求没有在总预算内完成，缩小问题范围；若前面还有 CDN/代理，也检查它的等待上限 |
-| 修改页面后仍是旧版本 | 重新执行 `up -d --build`，然后强制刷新浏览器 |
+| 修改页面后仍是旧版本 | 按所选方案重新构建后端镜像并更新容器，然后强制刷新浏览器 |
 | 构建时镜像或依赖下载失败 | 分别检查 Docker Hub、ghcr.io、PyPI、Go 模块下载地址的网络；这与模型 Key 无关 |
 
 ## 部署文件说明
@@ -233,7 +285,7 @@ Go 镜像使用 `GOMAXPROCS=1` 和 `go build -p 1 -v`，串行编译依赖并输
 |---|---|
 | 根目录 `compose.yaml` | 三个服务的启动顺序、内部地址、端口、健康检查和证书卷 |
 | `deploy/agent-service.Dockerfile` | 使用 Python 3.12 和锁定依赖构建 Python 服务；以非 root 用户运行 |
-| `deploy/backend.Dockerfile` | 使用 Go 1.26.4 编译二进制，并打包静态前端；以非 root 用户运行 |
+| `deploy/backend.Dockerfile` | 使用 Go 1.26.4 交叉编译，排除 MsgPack 并缓存编译结果，打包静态前端；以非 root 用户运行 |
 | `deploy/compose.existing-proxy.yaml` | 共用已有反向代理时，仅将 Go 映射到宿主机回环地址 |
 | `deploy/Caddyfile` | 反向代理到 Go；研究请求等待上限为 320 秒 |
 | `deploy/.env.example` | 域名和服务限制的示例 |
