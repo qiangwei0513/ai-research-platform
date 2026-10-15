@@ -1,0 +1,69 @@
+name: ai-research-platform
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  agent-service:
+    build:
+      context: .
+      dockerfile: deploy/agent-service.Dockerfile
+    env_file:
+      - ./agent-service/.env
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/backend.Dockerfile
+    environment:
+      GO_ADDR: "0.0.0.0:8080"
+      AGENT_SERVICE_URL: "http://agent-service:8000/research"
+      FRONTEND_DIR: "/app/frontend"
+      GIN_MODE: release
+      MAX_CONCURRENT_RESEARCH: "${MAX_CONCURRENT_RESEARCH:-2}"
+      RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-20}"
+    depends_on:
+      agent-service:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      SITE_ADDRESS: "${SITE_ADDRESS:-http://localhost}"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+volumes:
+  caddy_data:
+  caddy_config:

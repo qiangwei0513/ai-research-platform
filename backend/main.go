@@ -49,6 +49,11 @@ func envOrDefault(name, fallback string) string {
 
 func main() {
 	r := gin.Default()
+	// 不使用任意客户端传入的 X-Forwarded-For 作为可信身份。
+	if err := r.SetTrustedProxies(nil); err != nil {
+		log.Fatal(err)
+	}
+	r.Use(securityHeaders())
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -56,17 +61,50 @@ func main() {
 		})
 	})
 
-	r.POST("/api/research", handleResearch)
+	limits := newRequestLimits(
+		envInteger("MAX_CONCURRENT_RESEARCH", 2, 1),
+		envInteger("RATE_LIMIT_PER_MINUTE", 20, 0),
+	)
+	r.POST("/api/research", limits.middleware(), handleResearch)
 
-	if err := r.Run(envOrDefault("GO_ADDR", "127.0.0.1:8080")); err != nil {
+	frontend, err := os.OpenRoot(envOrDefault("FRONTEND_DIR", "../frontend"))
+	if err != nil {
+		log.Printf("未加载前端目录（API 仍可使用）: %v", err)
+	} else {
+		defer frontend.Close()
+		registerFrontend(r, frontend)
+	}
+
+	server := &http.Server{
+		Addr:              envOrDefault("GO_ADDR", "127.0.0.1:8080"),
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      330 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 * 1024,
+	}
+	log.Printf("服务监听 %s；全局并发上限 %d，每分钟请求上限 %d（0 表示不限制频率）", server.Addr, cap(limits.slots), limits.perMinute)
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
 }
 
 func handleResearch(c *gin.Context) {
-	// 1. 把客户端发送的 JSON 解析成 Go 结构体。
+	// 1. 先限制整个请求体，再解析 JSON，避免超大输入占用内存。
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBytes)
+	requestBody, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "请求体不能超过 64 KiB", "code": "request_too_large"})
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求内容失败"})
+		}
+		return
+	}
 	var input ResearchRequest
-	if err := c.ShouldBindJSON(&input); err != nil {
+	if err := json.Unmarshal(requestBody, &input); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "请求格式错误，请提交包含字符串 query 的 JSON",
 		})

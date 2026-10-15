@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f7f6f2">
+  <meta name="description" content="知序研究助手：从一个问题出发，规划搜索、整理资料，生成有来源可查的研究报告。">
+  <title>知序 · AI 研究助手</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script defer src="/assets/vendor/marked.umd.js"></script>
+  <script defer src="/assets/vendor/purify.min.js"></script>
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#query">跳到研究问题</a>
+  <div class="site-shell">
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="知序首页">
+        <img src="/assets/favicon.svg" width="36" height="36" alt="">
+        <span class="brand-name">知序</span><span class="brand-caption">RESEARCH STUDIO</span>
+      </a>
+      <div class="header-right">
+        <span class="service-status" id="service-status"><span class="status-dot"></span><span id="service-label">正在连接服务</span></span>
+        <button class="text-button help-button" id="help-button" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#help"></use></svg>使用说明</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="intro" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow"><span></span> 从提问，到理解</p>
+          <h1 id="page-title">让好奇，<span>有据可循。</span></h1>
+          <p class="intro-description">把想了解的问题交给 AI，一起探索资料背后的答案。</p>
+        </div>
+        <div class="process" aria-label="研究流程：规划问题、检索资料、整理报告">
+          <span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#compass"></use></svg>规划</span>
+          <svg class="icon process-arrow" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg>
+          <span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#search"></use></svg>检索</span>
+          <svg class="icon process-arrow" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg>
+          <span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#document"></use></svg>成文</span>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <aside class="question-column" aria-label="研究设置">
+          <form class="question-card" id="research-form">
+            <div class="section-heading"><span class="section-number">01</span><h2>开始一次探索</h2></div>
+            <fieldset class="mode-switch" id="mode-switch">
+              <legend class="sr-only">选择回答模式</legend>
+              <label><input type="radio" name="mode" value="research" checked><span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#spark"></use></svg>深入研究</span></label>
+              <label><input type="radio" name="mode" value="chat"><span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#chat"></use></svg>快速问答</span></label>
+            </fieldset>
+            <p class="mode-description" id="mode-description">规划搜索，交叉整理资料，生成带来源的报告。</p>
+            <label class="query-label" for="query">你想研究什么？</label>
+            <div class="textarea-wrap">
+              <textarea id="query" name="query" rows="7" maxlength="10000" placeholder="例如：Go context 的取消信号如何传播？结合官方文档，解释原理和常见误区。" aria-describedby="query-hint query-count form-error" required></textarea>
+              <div class="textarea-meta"><span id="query-hint">越具体的问题，越有用的答案</span><span id="query-count">0 / 5000</span></div>
+            </div>
+            <p class="form-error" id="form-error" role="alert" hidden></p>
+            <button class="primary-button" id="submit-button" type="submit"><span id="submit-label">生成研究报告</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg></button>
+            <div class="submit-hint"><span>无需登录，即刻开始</span><kbd id="shortcut-hint">Ctrl ↵</kbd></div>
+            <div class="examples">
+              <p class="small-heading">还没想好？从这里开始</p>
+              <button type="button" class="example-button" data-example="研究 Go context 的取消信号如何传播，结合官方文档解释实现原理、使用方式与常见误区。"><span class="example-category">技术原理</span><span>Go context 如何传播取消信号？</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#diagonal"></use></svg></button>
+              <button type="button" class="example-button" data-example="为一个小型 Web 应用比较 SQLite 与 PostgreSQL，从并发访问、部署维护和扩展需求分析选择依据。"><span class="example-category">方案比较</span><span>小型应用应该选择哪种数据库？</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#diagonal"></use></svg></button>
+              <button type="button" class="example-button" data-example="研究蝴蝶效应的科学含义、起源与适用范围，辨析日常生活中常见的误解，并提供可靠资料。"><span class="example-category">科学探索</span><span>蝴蝶效应，究竟意味着什么？</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#diagonal"></use></svg></button>
+            </div>
+          </form>
+          <p class="local-note"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#lock"></use></svg>页面不保存历史，离开前记得下载报告。</p>
+        </aside>
+
+        <section class="result-card" id="result-card" aria-labelledby="result-heading" aria-busy="false">
+          <div class="result-header">
+            <div class="section-heading"><span class="section-number">02</span><h2 id="result-heading">探索结果</h2></div>
+            <div class="result-actions" id="result-actions" hidden>
+              <button class="icon-button" type="button" id="copy-button" title="复制 Markdown" aria-label="复制 Markdown"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#copy"></use></svg></button>
+              <button class="icon-button" type="button" id="download-button" title="下载 Markdown" aria-label="下载 Markdown"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#download"></use></svg></button>
+              <span class="action-divider"></span><button class="text-button" type="button" id="reset-button">新研究<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#plus"></use></svg></button>
+            </div>
+            <span class="muted result-placeholder" id="result-placeholder">留一点空间，给新的发现</span>
+          </div>
+
+          <div class="empty-state" id="empty-state">
+            <img class="empty-art" src="/assets/empty-state.svg" width="264" height="188" alt="">
+            <span class="empty-eyebrow">YOUR NEXT DISCOVERY</span>
+            <h3>每一份好答案<br>都从一个好问题开始</h3>
+            <p>输入你的问题，我们来寻找线索、梳理资料，<br class="desktop-break">让零散的信息，成为清晰的理解。</p>
+            <div class="empty-features"><span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#layers"></use></svg>结构化分析</span><span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#link"></use></svg>来源可追溯</span></div>
+          </div>
+
+          <div class="waiting-state" id="waiting-state" hidden>
+            <div class="orbit-spinner" aria-hidden="true"><img src="/assets/favicon.svg" width="32" height="32" alt=""></div>
+            <p class="empty-eyebrow">CURIOSITY TAKES A MOMENT</p>
+            <h3 id="waiting-title">正在研究你的问题</h3>
+            <p id="waiting-description">报告、计划和参考来源将在完成后一起呈现。</p>
+            <div class="elapsed-badge">已等待 <span id="elapsed">00:00</span></div>
+            <p class="waiting-note" id="waiting-note">深入研究最多等待约 5 分钟，请保持页面打开。</p>
+          </div>
+
+          <div class="error-state" id="error-state" hidden>
+            <span class="error-symbol"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#alert"></use></svg></span>
+            <h3 id="error-title" tabindex="-1">这次探索暂时中断了</h3>
+            <p id="error-message"></p>
+            <button class="secondary-button" id="retry-button" type="button">重新尝试<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#refresh"></use></svg></button>
+          </div>
+
+          <div id="success-state" hidden>
+            <div class="result-context"><p id="result-query"></p><div class="result-meta"><span class="result-mode" id="result-mode"></span><span id="result-duration"></span><span id="result-source-count"></span></div></div>
+            <div class="partial-notice" id="partial-notice" hidden><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#alert"></use></svg><span>部分搜索未取得资料，报告基于已获得的来源生成。你可以在研究计划中查看详情。</span></div>
+            <div class="result-tabs" role="tablist" aria-label="研究结果内容" id="result-tabs">
+              <button type="button" role="tab" id="tab-report" aria-controls="panel-report" aria-selected="true" tabindex="0" data-tab="report">研究报告</button>
+              <button type="button" role="tab" id="tab-plan" aria-controls="panel-plan" aria-selected="false" tabindex="-1" data-tab="plan">研究计划</button>
+              <button type="button" role="tab" id="tab-sources" aria-controls="panel-sources" aria-selected="false" tabindex="-1" data-tab="sources">参考来源 <span id="sources-count">0</span></button>
+            </div>
+            <div class="result-panel prose" id="panel-report" role="tabpanel" aria-labelledby="tab-report" tabindex="0"></div>
+            <div class="result-panel" id="panel-plan" role="tabpanel" aria-labelledby="tab-plan" tabindex="0" hidden></div>
+            <div class="result-panel" id="panel-sources" role="tabpanel" aria-labelledby="tab-sources" tabindex="0" hidden></div>
+            <div class="report-footnote"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#info"></use></svg>AI 可能出现错误，重要结论请结合原始来源核实。</div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="site-footer"><span>知序 <span class="footer-dot">/</span> 为每一次好奇，找到依据。</span><span>基于搜索片段整理 · 不代表已阅读全文</span></footer>
+  </div>
+  <div class="sr-only" id="live-status" role="status" aria-live="polite"></div>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <dialog id="help-dialog" aria-labelledby="help-title">
+    <div class="dialog-header"><p class="eyebrow">GETTING STARTED</p><button class="icon-button" id="close-help" type="button" aria-label="关闭使用说明"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#close"></use></svg></button></div>
+    <h2 id="help-title">从一个具体的问题开始</h2>
+    <ol class="help-steps"><li><strong>选择一种探索方式</strong><p>「深入研究」会先规划，再搜索并撰写报告；「快速问答」直接回答，必要时调用搜索工具。</p></li><li><strong>告诉我们你想了解什么</strong><p>加入研究范围、使用场景或希望比较的方案，能帮助 AI 更准确地理解问题。</p></li><li><strong>阅读答案，也检查来源</strong><p>研究完成后可以查看搜索计划、参考来源，复制或下载 Markdown 报告。</p></li></ol>
+    <div class="help-note">每次提问独立处理，不继承上一次对话。页面不保存历史，刷新或关闭后结果会消失。研究仅依据搜索返回的片段与摘要，未抓取网页全文。</div>
+  </dialog>
+  <noscript><div class="noscript-message">请启用 JavaScript，以使用研究助手。</div></noscript>
+</body>
+</html>
