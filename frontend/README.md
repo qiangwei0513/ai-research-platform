@@ -4,7 +4,7 @@
 
 ## 运行方式
 
-先按根 README 启动 Python，再在 `backend/` 中运行 `go run .`，访问 **http://127.0.0.1:8080**。
+按[根 README](../README.md#本地启动完整功能)启动数据服务、Python 和 Go，访问 **http://127.0.0.1:8080**。
 
 不要直接双击 `index.html`，也不要只用普通静态文件服务器打开它；页面需要同源的 `/ping`、`/api/research`、`/api/auth/*` 和 `/api/tasks/*`。账号与历史需要启动 MySQL，并在 Go 中启用 `MYSQL_DSN` / `JWT_SECRET`。修改 HTML、CSS、JS 后刷新页面即可；修改 Go 代码才需要重新启动 Go。服务器部署见 [部署说明](../deploy/README.md)。
 
@@ -27,7 +27,7 @@
 
 1. **选择模式。** 页面默认选择 `research`，会经过 Planner → Searcher/Search Agent → Writer。`chat` 调用原来的问答 Agent，必要时使用工具。两者每次请求都独立，没有多轮对话记忆。
 2. **输入问题。** 按 Unicode 字符计数，去掉首尾空白后允许 1～5000 个字符。点击示例只填入输入框，不直接发起模型调用。支持 `⌘+Enter` / `Ctrl+Enter`。
-3. **发出请求。** `submitResearch` 使用 `fetch` 向同源 `/api/research` 发送 `{query, mode, fresh}`；登录时携带 `Authorization: Bearer …`，结果保存至当前账号。勾选「重新搜索最新资料」时 `fresh=true`。等待期间禁用重复提交、编辑和账号切换。
+3. **发出请求。** `submitResearch` 通过 `Account.api` 封装的 `fetch` 向同源 `/api/research` 发送 `{query, mode, fresh}`；登录时携带 `Authorization: Bearer …`，结果保存至当前账号。勾选「重新搜索最新资料」时 `fresh=true`。等待期间禁用重复提交、编辑和账号切换。
 4. **等待结果。** 显示真实经过的时间。当前 API 一次返回全部结果，没有实时阶段事件，因此页面不展示虚构的阶段进度或百分比。问答在 140 秒、研究在 320 秒后结束浏览器等待，略长于 Go 的 130 / 310 秒预算。
 5. **展示答案。** `showResult` 读取 `result`、`plan`、`search`。报告页展示 Markdown；计划页展示目标、每项搜索的目的、状态、摘要、缓存使用情况和资料获取时间；来源页展示真实标题、地址和搜索片段。普通问答只显示回答页。
 6. **处理资料缺口。** `search.status=partial` 时显示提示，计划页区分取得资料、暂无资料和搜索失败。搜索全失败或没有可用资料时展示错误，不把错误当作报告。

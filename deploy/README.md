@@ -1,173 +1,171 @@
-# 部署到 Ubuntu / Debian 服务器
+# 部署与运维
 
-本方案运行三个容器：Caddy 接收浏览器请求并提供 HTTPS，Go 提供网页与 API，Python 执行 Agent 工作流。前端是静态文件，构建时随 Go 一起打包，不需要安装 Node.js。
+Go 镜像内含静态网页，Python 执行研究；启用账号、历史和缓存后，还需要 MySQL、Redis。前端不单独构建，也不需要在服务器安装 Node.js、Go 或 Python。
+
+优先使用**已有离线部署包**；它包含四个镜像和运行配置，服务器只导入并启动。需要从源码生成新版时，在开发机构建镜像。以下默认目标为 **Linux x86_64 / amd64**，并复用服务器已有的 Nginx / Caddy。
 
 ```text
-访客浏览器 → 域名 / HTTPS :443 → Caddy → Go :8080 → Python :8000
-                                             ↓            ↓
-                                          静态网页    模型服务 + Tavily
+浏览器 → 已有反向代理 / HTTPS → 127.0.0.1:18080 → Go → Python → 模型与 Tavily
+                                                  ↓      ↓
+                                                MySQL   Redis
 ```
 
-公开端口只有 80、443；8000、8080 只在容器网络内使用。服务器需要能访问模型服务、Tavily，以及构建使用的 Docker 镜像和依赖仓库。当前请求会等待报告完整生成，最长约 5 分钟；还没有后台任务队列。本文默认配置仅提供匿名研究；启用网页登录、个人历史和缓存时，需叠加 [数据服务 Compose 配置](compose.data.yaml)，相关参数见 [后端说明](../backend/README.md#环境变量)。
+Go 也使用 Redis 缓存任务状态。MySQL、Redis 和 Python 不映射宿主机端口。当前研究是同步请求，代理读取超时需要覆盖 Go 的 310 秒预算；队列和 SSE 尚未实现。
 
-如果服务器只有 **2 GiB 内存且已经运行简历、Umami 或数据库**，优先使用后面的「在开发机构建，服务器只运行」方案。镜像构建会额外占用 CPU 和内存，不应与线上站点争抢有限资源。
+## 服务器准备
 
-## 1. 安装 Docker 和 Compose
-
-在 Ubuntu / Debian 服务器上安装 Git、Docker Engine，以及 Docker Compose 插件。按照与你系统匹配的官方文档中「Install using the apt repository」步骤操作：
-
-- [Ubuntu 安装步骤](https://docs.docker.com/engine/install/ubuntu/#install-using-the-apt-repository)
-- [Debian 安装步骤](https://docs.docker.com/engine/install/debian/#install-using-the-apt-repository)
-
-安装 Docker 时需要包含 `docker-compose-plugin` 和 `docker-buildx-plugin`。后续命令使用 `sudo docker compose`，不需要额外配置 Docker 用户组。
+服务器需要 Docker Engine 和 Compose 插件；安装步骤见 [Ubuntu](https://docs.docker.com/engine/install/ubuntu/) 或 [Debian](https://docs.docker.com/engine/install/debian/) 官方文档。确认服务可用和 CPU 架构：
 
 ```bash
-sudo apt update
-sudo apt install -y git
-sudo systemctl enable --now docker
-sudo docker version
-sudo docker compose version
+docker version
+docker compose version
+uname -m
 ```
 
-最后两个命令应显示版本，且 Docker 服务端没有连接错误。Docker 会在镜像内安装 Go、Python 和依赖，服务器不需要再单独安装它们。
+`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`，镜像必须匹配服务器。Docker 命令以下假设当前用户有访问权限。运行研究时，服务器仍需访问模型服务和 Tavily；离线包只免除构建和下载镜像。
 
-## 2. 上传或拉取项目
+## 使用已有离线包
 
-若使用 GitHub，在服务器执行：
+本地生成的包位于 `dist/`，不上传 GitHub；它对应生成时的代码，修改源码不会自动更新包内镜像。2026-10-19 的含登录与历史页面版本为：
 
-```bash
-mkdir -p ~/apps
-cd ~/apps
-git clone https://github.com/qiangwei0513/ai-research-platform.git
-cd ai-research-platform
+```text
+ai-research-platform-v4-ui-amd64-20261019.tar.gz
 ```
 
-如果已经上传了整个项目，直接进入项目根目录即可；该目录中应有 `compose.yaml`、`frontend/`、`backend/` 和 `agent-service/`。后续命令都在这个目录执行。
+它与 `docker image save` 直接导出的镜像 `.tar` 不同：外层 `.tar.gz` 还包含运行配置和安装脚本。**外层包先用 `tar` 解压，内部 `images.tar` 才交给 Docker 导入。**
 
-## 3. 配置 DNS 和端口
+包内文件：
 
-假设你准备使用 `agent.luananwei.me`，在域名的 DNS 控制台添加：
+| 文件 | 用途 |
+| --- | --- |
+| `images.tar` | Go（含网页）、Python、MySQL、Redis 四个 amd64 镜像 |
+| `compose.yaml` | 直接运行镜像，没有服务器构建步骤 |
+| `.env` / `agent.env` | 数据服务、JWT 与模型 / 搜索配置 |
+| `install.sh` | 校验、导入、备份已有同项目数据库、启动和健康检查 |
+| `SHA256SUMS` | 包内文件校验和 |
+| `verification.json` | 构建时的验证记录 |
+| `README.txt` | 该版本的安装说明 |
 
-| 类型 | 主机记录 | 值 |
-|---|---|---|
-| A | `agent` | 服务器的公网 IPv4 地址 |
+本机包已配置真实凭据，传输给自己的服务器即可，不要公开分享或上传 GitHub。镜像本身不含这些运行时凭据。
 
-这里新增 `agent` 子域名即可，**保留 `luananwei.me` 的根域名记录和现有个人简历站点**。只有服务器确实配置了可用的公网 IPv6 时才添加 AAAA；已有错误的 AAAA 记录需要删除或修正，否则部分访问和证书申请可能失败。
-
-在云服务器安全组中放行 TCP **80、443**，同时保留你当前的 SSH 管理端口；无需放行 8000 或 8080。确认 80、443 没有被已有 Nginx、Apache 或其他服务占用。使用 Cloudflare 等 DNS 服务时，首次部署先使用「仅 DNS」模式，使域名直接指向服务器；额外代理可能有比本项目更短的请求等待上限。
-
-## 4. 填写两个环境变量文件
-
-这两个文件用途不同：
-
-| 文件 | 谁读取 | 保存什么 |
-|---|---|---|
-| `deploy/.env` | Docker Compose | 域名、公开服务的请求限制 |
-| `agent-service/.env` | Python 容器 | 模型与 Tavily 的凭据 |
-
-首次部署、对应文件不存在时复制示例：
+在**本机项目根目录**执行，替换 `SERVER_IP`：
 
 ```bash
-cp deploy/.env.example deploy/.env
-cp deploy/agent.env.example agent-service/.env
+scp dist/ai-research-platform-v4-ui-amd64-20261019.tar.gz root@SERVER_IP:/tmp/
+```
+
+在**服务器**执行：
+
+```bash
+mkdir -p /opt/ai-research-releases
+tar -xzf /tmp/ai-research-platform-v4-ui-amd64-20261019.tar.gz -C /opt/ai-research-releases
+cd /opt/ai-research-releases/ai-research-platform-v4-ui-amd64-20261019
+bash install.sh
+```
+
+安装脚本使用 `--no-build --pull never`，保留项目名 `ai-research-platform` 与 MySQL 数据卷。已有同项目 MySQL 正在运行时，先验证密码并备份；密码不匹配会停止，不替换服务。已有反向代理继续指向 `http://127.0.0.1:18080`。若域名代理尚未配置，按下文添加。
+
+安装完成后，留在解压目录中定义便捷命令，后续运维使用该目录的配置：
+
+```bash
+dc() { docker compose --env-file .env -f compose.yaml "$@"; }
+dc ps
+curl http://127.0.0.1:18080/health
+```
+
+不要混用旧源码目录 `/opt/ai-research-platform` 中的 Compose 来管理新包。重复上传版本时保留已使用的配置与备份；安装成功后仍保留一个可回退的完整部署包。
+
+## 从源码构建新版镜像
+
+以下是一条独立的源码发布流程，适合后续修改代码后重新构建。使用根目录 Compose 和 `deploy/` 的扩展文件；它不自动生成上面的完整安装包。
+
+### 配置文件
+
+在开发机和服务器的项目根目录，首次创建配置：
+
+```bash
+test -f deploy/.env || cp deploy/.env.example deploy/.env
+test -f agent-service/.env || cp agent-service/.env.example agent-service/.env
 chmod 600 deploy/.env agent-service/.env
 ```
 
-已有配置时直接编辑，不要再次复制覆盖。
+| 文件 | 读取方 | 配置内容 |
+| --- | --- | --- |
+| `deploy/.env` | Docker Compose | MySQL / Redis 密码、JWT 密钥、并发与频率限制、缓存 TTL、可选域名 |
+| `agent-service/.env` | Python | 模型 Key、完整 Base URL、Tavily Key、关闭外部 tracing |
+
+将示例占位值改为真实配置。初次部署建议分别用 `openssl rand -hex 32` 生成密码和密钥，避免 URL / DSN 的特殊字符；`JWT_SECRET` 至少 32 字节。升级已有数据库时保留原密码，修改 `.env` 不会自动修改数据库账号密码。
+
+`MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD`、`REDIS_PASSWORD` 和 `JWT_SECRET` 是内部服务配置，不是网站账号。网站账号在页面自行注册。模型服务需要支持当前代码中的 `deepseek-flash`。
+
+### 本机构建并导出四个镜像
+
+在**开发机项目根目录**执行；Apple 芯片 Mac 也需要明确指定 `linux/amd64`：
 
 ```bash
-nano deploy/.env
+docker buildx build --platform linux/amd64 --load \
+  -t ai-research-platform-backend:latest -f deploy/backend.Dockerfile .
+docker buildx build --platform linux/amd64 --load \
+  -t ai-research-platform-agent-service:latest -f deploy/agent-service.Dockerfile .
+docker pull --platform linux/amd64 mysql:8.4
+docker pull --platform linux/amd64 redis:7.4-alpine
+
+mkdir -p dist
+docker image save --platform linux/amd64 -o dist/ai-research-images.tar \
+  ai-research-platform-backend:latest \
+  ai-research-platform-agent-service:latest \
+  mysql:8.4 redis:7.4-alpine
+scp dist/ai-research-images.tar root@SERVER_IP:/tmp/
 ```
 
-将 `SITE_ADDRESS` 改为你的真实域名，**不要加路径**：
+需要支持 `docker image save --platform` 的 Docker 版本。构建时遇到 builder 连接错误，可用 `docker buildx ls` 查看；本机 Docker Desktop 可在构建命令中明确加 `--builder desktop-linux`。构建在本机依次进行，镜像源和依赖下载仍需要网络。
 
-```dotenv
-SITE_ADDRESS=agent.luananwei.me
-MAX_CONCURRENT_RESEARCH=2
-RATE_LIMIT_PER_MINUTE=20
-```
+将同一版本的源文件同步到服务器项目目录；若用 GitHub 更新，配置文件需要单独保留或安全传输，因为 Git 不包含真实 `.env`。上面的镜像名称匹配根 Compose 的项目名，使用此流程时保留 `ai-research-platform`，不要另设项目名。
 
-然后编辑模型配置：
+### 服务器导入与启动
+
+在服务器的**源码项目根目录**执行，例如 `/opt/ai-research-platform`：
 
 ```bash
-nano agent-service/.env
-```
+cd /opt/ai-research-platform
+docker image load -i /tmp/ai-research-images.tar
 
-将你本地已跑通的 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`TAVILY_API_KEY` 填入，并保留 `OPENAI_AGENTS_DISABLE_TRACING=1`。API 地址必须能从服务器访问，不能是仅在你电脑上运行的 `localhost` 地址。目前各 Agent 使用的模型名称仍为 `deepseek-flash`，服务商需要支持该模型。
-
-这些 `.env` 文件被 Git 忽略，Docker 构建也会排除它们。Compose 仅在启动时将模型凭据注入 Python 容器；浏览器、Go 和 Caddy 都不需要这些 Key。不要把含有真实配置的 `docker compose config` 完整输出分享给别人，校验时使用下面的 `--quiet`。
-
-## 5. 构建并启动
-
-下面的默认方案用于 **80、443 端口空闲**的服务器。如果个人简历已经在同一台服务器占用这两个端口，请使用后面的「与现有简历站点共用服务器」方案，不要停止现有站点。
-
-```bash
-sudo docker compose --env-file deploy/.env config --quiet
-sudo docker compose --parallel 1 --env-file deploy/.env build
-sudo docker compose --env-file deploy/.env up -d --no-build
-sudo docker compose --env-file deploy/.env ps
-```
-
-首次构建需要下载镜像和依赖，耗时取决于服务器网络和配置。`--parallel 1` 让 Compose 依次构建服务，不能作为内存上限。Python 健康检查通过后 Go 才启动，Go 健康检查通过后 Caddy 才启动；健康检查只确认进程接口可响应，不检查模型 Key 和 Tavily Key 是否有效。
-
-DNS 已指向服务器且端口可访问时，Caddy 会为 `SITE_ADDRESS` 中的域名申请 HTTPS 证书并自动续期，无需再安装 Certbot。证书存放在 `caddy_data` 卷中，普通容器重建不会丢失。[Caddy 自动 HTTPS 说明](https://caddyserver.com/docs/automatic-https)
-
-在浏览器打开：
-
-```text
-https://agent.luananwei.me
-```
-
-用一个简单问题先试普通问答，再试完整研究。页面能打开只证明网页已部署，完整研究成功才说明服务器能访问模型和 Tavily。
-
-命令行也可以检查：
-
-```bash
-curl https://agent.luananwei.me/ping
-curl --max-time 330 https://agent.luananwei.me/api/research \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"研究 Go context 如何实现超时和取消传播","mode":"research"}'
-```
-
-请把命令里的示例域名换成你的域名。第二条命令会真实调用模型和 Tavily，产生相应 API 用量。
-
-如果只想在运行 Docker 的本机预览，可以保留 `SITE_ADDRESS=http://localhost` 并打开 `http://localhost`；这个配置明确使用 HTTP，不申请证书，也不使用自签名 HTTPS。公开域名上线时要替换此值并重建 Caddy 容器。
-
-## 与现有简历站点共用服务器
-
-如果 `luananwei.me` 已经由这台服务器上的 Nginx 或 Caddy 提供服务，保留它作为唯一的公网入口。本项目使用额外的 Compose 配置，只把 Go 暴露到服务器本机 `127.0.0.1:18080`，不会启动本项目的 Caddy，也不会抢占 80、443：
-
-```bash
-sudo docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env config --quiet
-sudo docker compose --parallel 1 -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env build
-sudo docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env up -d --no-build
-curl http://127.0.0.1:18080/ping
-```
-
-使用这个方案后，后续的 `ps`、`logs`、`up`、`down` 都需要保留这两个 `-f` 参数。`SITE_ADDRESS` 此时不会配置现有代理，需要你在现有代理中新增 **agent 子域名站点**，不要替换简历站点的配置。
-
-若现有代理是安装在宿主机上的 Caddy，在其配置中追加：
-
-```caddyfile
-agent.luananwei.me {
-    reverse_proxy 127.0.0.1:18080 {
-        transport http {
-            response_header_timeout 320s
-            read_timeout 320s
-            write_timeout 320s
-        }
-    }
+dc() {
+  docker compose --env-file deploy/.env \
+    -f compose.yaml \
+    -f deploy/compose.data.yaml \
+    -f deploy/compose.existing-proxy.yaml "$@"
 }
+dc config --quiet
+dc up -d --no-build --pull never --wait --wait-timeout 240
+dc ps
+curl http://127.0.0.1:18080/health
 ```
 
-按现有 Caddy 的管理方式校验并重新加载配置，Caddy 会处理该子域名的证书。
+这是完整 V3/V4 配置：四个服务，账号、个人历史和两种缓存均启用。`config --quiet` 只校验配置；不要把包含凭据的完整 `config` 输出公开。更新已有数据库前按下文备份，再执行 `up`。普通 `restart` 不会加载新环境变量，应使用 `up -d --no-build --pull never`。
 
-若现有代理是安装在宿主机上的 Nginx，新增一个独立的子域名配置，HTTP 入口可以从下面开始：
+### 独立使用 Caddy
+
+只有服务器没有其他入口占用 80 / 443 时才需要项目自带的 Caddy。设置 `deploy/.env` 的 `SITE_ADDRESS=research.example.com`，去掉 `compose.existing-proxy.yaml`：
+
+```bash
+docker compose --env-file deploy/.env \
+  -f compose.yaml -f deploy/compose.data.yaml \
+  up -d --no-build --wait --wait-timeout 240
+```
+
+该方式额外需要 `caddy:2-alpine` 镜像，默认可由服务器下载；如果服务器不能下载，也在本机拉取对应架构并一起导出。`SITE_ADDRESS=http://localhost` 仅用于 HTTP 预览。Caddy 证书保存在 `caddy_data` 卷中。
+
+## 接入现有域名和反向代理
+
+给新子域名添加服务器公网 IP 的 DNS 记录，保持已有网站配置。只有服务器已具备可用 IPv6 时才添加 AAAA。公网放行 80 / 443 及原有 SSH 管理端口，不需要放行 18080、8000、3306、6379。
+
+宿主机 Nginx 可新增独立站点，以下为 HTTP 配置示例：
 
 ```nginx
 server {
     listen 80;
-    server_name agent.luananwei.me;
+    server_name research.example.com;
 
     location / {
         proxy_pass http://127.0.0.1:18080;
@@ -182,114 +180,121 @@ server {
 }
 ```
 
-配置放到现有 Nginx 加载的目录中，启用前先执行 `sudo nginx -t`，通过后再重新加载。DNS 生效且 HTTP 可访问后，按现有证书管理方式为 **agent.luananwei.me** 配置 HTTPS；使用 Certbot 时，可以参考 [Ubuntu 的 TLS 证书指南](https://ubuntu.com/server/docs/how-to/security/obtain-tls-certificates/) 对该域名单独签发。对外分享时使用 HTTPS 地址。[Nginx 代理超时说明](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_read_timeout)
+替换域名，运行 `nginx -t` 后按现有方式重新加载。沿用服务器当前的证书工具或面板，为新子域名单独配置 HTTPS 和续期。已有 HTTPS 站点只需核对代理目标和超时，无需重复配置。
 
-如果简历站点由宝塔、1Panel 等面板管理，在面板中新增子域名站点，反向代理到 `http://127.0.0.1:18080`，为子域名启用 HTTPS，并将代理读取超时设置为至少 320 秒。若现有反向代理本身也在容器中，它的 `127.0.0.1` 指向代理容器自身，需要用该代理支持的容器网络连接方式访问后端，不能直接套用宿主机地址。
+宿主机 Caddy 可以追加：
 
-## 在开发机构建，服务器只运行
-
-以下流程适合与简历站点共用的小规格服务器，沿用上面的现有代理方案。构建放在你的电脑上，服务器只导入和运行镜像。电脑需要安装并启动 Docker Desktop。
-
-先在**服务器**确认 CPU 架构：
-
-```bash
-uname -m
+```caddyfile
+research.example.com {
+    reverse_proxy 127.0.0.1:18080 {
+        transport http {
+            response_header_timeout 320s
+            read_timeout 320s
+            write_timeout 320s
+        }
+    }
+}
 ```
 
-`x86_64` 对应 `linux/amd64`，`aarch64` 对应 `linux/arm64`。Apple 芯片 Mac 默认是 ARM 架构，因此必须明确指定服务器的平台，不能直接上传默认构建的镜像。
+若反向代理本身在容器中，`127.0.0.1` 指向代理容器自身，需要通过共享 Docker 网络等方式访问 Go，不能直接套用宿主机地址。前置 CDN 也可能有更短的等待上限。
 
-在**开发机的项目根目录**执行。以下以服务器为 `x86_64` 为例；如果是 `aarch64`，把第一行改为 `linux/arm64`：
+## 检查、日志与更新
 
-```bash
-AI_RESEARCH_PLATFORM=linux/amd64
-docker buildx build --platform "$AI_RESEARCH_PLATFORM" --load \
-  -t ai-research-platform-backend:latest -f deploy/backend.Dockerfile .
-docker buildx build --platform "$AI_RESEARCH_PLATFORM" --load \
-  -t ai-research-platform-agent-service:latest -f deploy/agent-service.Dockerfile .
-docker image save -o /tmp/ai-research-images.tar \
-  ai-research-platform-backend:latest ai-research-platform-agent-service:latest
-scp /tmp/ai-research-images.tar root@47.80.21.229:/tmp/
-```
-
-这两次构建依次执行。Go 使用构建机原生编译器生成目标平台程序；Python 在目标平台环境中安装依赖，在不同架构的 Mac 上可能用到 Docker Desktop 的模拟运行，耗时可能更长。[Docker 多平台构建说明](https://docs.docker.com/build/building/multi-platform/)
-
-上面的镜像名对应 `compose.yaml` 中的项目名 `ai-research-platform`。此流程不要另设 `-p` 或 `COMPOSE_PROJECT_NAME`，否则 Compose 会寻找其他名称的镜像。镜像不包含 `.env` 文件，服务器仍需要第 4 步的配置。
-
-先将同一版本的项目文件同步到服务器，保留服务器自己的 `.env`，再在**服务器**执行：
+以下 `dc` 使用你所选部署方式中定义的函数，并保持在对应目录：
 
 ```bash
-cd /opt/ai-research-platform
-docker image load -i /tmp/ai-research-images.tar
-docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env config --quiet
-docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env \
-  up -d --no-build --pull never backend agent-service
-docker compose -f compose.yaml -f deploy/compose.existing-proxy.yaml --env-file deploy/.env ps
-curl http://127.0.0.1:18080/ping
+dc ps
+dc logs --tail=100 backend agent-service mysql redis
+curl http://127.0.0.1:18080/health
+dc exec -T agent-service python -c 'import urllib.request; print(urllib.request.urlopen("http://127.0.0.1:8000/health").read().decode())'
 ```
 
-`--no-build --pull never` 只使用已经导入的镜像；缺少镜像时会报错，不会自动在服务器上开始构建。镜像导入仍需要可用内存和磁盘空间，但省去了 Go 编译和 Python 依赖安装。确认启动正常后，可删除两端的 `/tmp/ai-research-images.tar` 释放空间。
+Go 健康响应应为 `status=ok`、`mysql=ok`、`redis=ok`，Python 应为 `status=ok`、`redis=ok`。Redis 故障时可以降级；MySQL 不可用则无法正常保存账号历史。`/ping` 只检查 Go 进程，健康接口也不会验证模型 Key。
 
-代码更新时，在开发机重新构建并上传镜像，服务器再次导入、执行上述启动命令。仅修改服务环境变量时无需重新构建或上传镜像。
+打开网站后注册登录，提交一次快速问答和深入研究，查看「我的历史」，刷新后重新打开报告。真实研究会产生模型与搜索用量；页面显示「服务已连接」只说明 Go 可访问。
 
-## 6. 日常更新和日志
+更新前先备份；代码或网页改动需要重建对应镜像，服务器重新 `load` 后执行 `dc up -d --no-build --pull never --wait --wait-timeout 240`。仅调整环境变量无需重建镜像。更新会中断正在执行的同步请求；过期任务会记录为失败，不会自动续跑。
 
-在服务器上构建的方案，从 GitHub 更新后依次构建并启动；如果采用开发机构建方案，按上一节更新镜像：
+停止与再次启动：
 
 ```bash
-git pull --ff-only
-sudo docker compose --parallel 1 --env-file deploy/.env build
-sudo docker compose --env-file deploy/.env up -d --no-build
+dc down
+dc up -d --no-build --pull never --wait --wait-timeout 240
 ```
 
-修改 `.env` 后执行 `up -d --no-build` 即可，使容器使用新配置；只运行 `restart` 不会重新读取容器的环境变量。与已有简历共用服务器时，继续保留两个 `-f` 参数。更新会中断正在执行的请求，当前版本没有任务恢复功能，尽量在无人使用时更新。
+保留数据卷，不使用 `down -v`。回退时使用上一个完整发布版本的镜像和配置；若数据库迁移发生变化，还需确认旧代码兼容，必要时在维护窗口恢复对应备份。
 
-查看近期日志：
+## 数据库备份与恢复
+
+在正在使用的部署目录定义好 `dc` 后，备份到仅当前用户可访问的文件：
 
 ```bash
-sudo docker compose --env-file deploy/.env logs --tail=100 backend agent-service
-sudo docker compose --env-file deploy/.env logs --tail=100 caddy
+mkdir -p backups
+chmod 700 backups
+umask 077
+backup_file="backups/research-$(date +%Y%m%d-%H%M%S).sql"
+dc exec -T mysql sh -c \
+  'MYSQL_PWD="$MYSQL_PASSWORD" exec mysqldump -u research --single-transaction --no-tablespaces research' \
+  > "$backup_file.partial" && mv "$backup_file.partial" "$backup_file"
 ```
 
-实时跟踪可加 `-f`，按 Ctrl+C 只会退出日志查看。日志可能包含研究问题、搜索词和资料链接，分享前注意内容。
+保留命令成功生成的 `.sql` 文件，并定期复制到服务器以外的位置。完整离线包的安装脚本也会在识别到正在运行的同项目 MySQL 时自动执行备份。Redis 当前只保存缓存，不是历史记录的持久化来源。
 
-停止服务：
+恢复会覆盖备份中涉及的表，应先保留当前备份、确认目标数据库和版本，并停止应用写入。在维护窗口执行，替换为已核验的备份文件：
 
 ```bash
-sudo docker compose --env-file deploy/.env down
+dc stop backend agent-service
+dc exec -T mysql sh -c 'MYSQL_PWD="$MYSQL_PASSWORD" exec mysql -u research research' \
+  < backups/verified-backup.sql
 ```
 
-不要给这条命令加 `-v`，否则会删除证书等持久卷。已有镜像时重新启动使用 `up -d --no-build`，无需再次构建。容器设置了 `restart: unless-stopped`，系统重启后 Docker 会恢复之前运行中的容器。
+确认导入成功后才重新启动应用：
+
+```bash
+dc up -d --no-build --pull never --wait --wait-timeout 240
+```
+
+## 旧镜像与归档清理
+
+**先启动并验证新版本，再清理旧版本。** `docker load` 只导入镜像，已有容器需要 `dc up` 才会切换；删除镜像不会代替更新容器。
+
+```bash
+docker ps -a --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+docker image ls
+```
+
+保留当前运行版本与一个可用的回退版本；仅用 `docker image rm 镜像名:旧标签` 删除已确认不用的项目镜像，或用旧镜像 ID 删除被新同名标签替代的镜像。不加 `--force`，也不批量删除其他项目的镜像、容器和卷。
+
+服务器 `/tmp/ai-research-images.tar` 等中转文件在导入、启动成功且另有发布包留存后可删除。`dist/` 下旧发布包也按同样原则处理。镜像归档、运行配置、数据库卷是不同内容；删除旧归档不影响已导入镜像。
+
+## 文件与职责
+
+| 文件 | 用途 |
+| --- | --- |
+| [根 compose.yaml](../compose.yaml) | Python、Go、Caddy 基础服务与启动依赖 |
+| [compose.data.yaml](compose.data.yaml) | MySQL、Redis、数据库卷及账号 / 缓存配置 |
+| [compose.existing-proxy.yaml](compose.existing-proxy.yaml) | Go 绑定本机 18080，停用独立 Caddy |
+| [compose.dev-data.yaml](compose.dev-data.yaml) | 本地开发 MySQL 13306 / Redis 16379 |
+| [compose.test.yaml](compose.test.yaml) | 独立测试 MySQL 23306 / Redis 26379；MySQL 使用临时文件系统 |
+| [backend.Dockerfile](backend.Dockerfile) | Go 交叉编译、缓存依赖并打包网页，非 root 运行 |
+| [agent-service.Dockerfile](agent-service.Dockerfile) | Python 3.12 与锁定依赖，非 root 运行 |
+| [Caddyfile](Caddyfile) | 独立入口的 HTTPS 与研究请求超时 |
+| [.env.example](.env.example) | Compose 的配置占位示例 |
+| [Agent 配置示例](../agent-service/.env.example) | 模型与搜索配置；本地和源码部署共用 |
+| [.dockerignore](../.dockerignore) | 排除真实凭据、依赖、测试、备份和镜像归档 |
 
 ## 常见问题
 
-Go 镜像使用 `-tags=nomsgpack` 排除项目没有使用的 MsgPack 功能，避免编译 `github.com/ugorji/go/codec`。现有接口使用 JSON，不受影响；将来若要新增 MsgPack 接口，需要调整这个构建标签。[Gin 官方说明](https://gin-gonic.com/zh-cn/docs/build-tags/nomsgpack/)
+| 现象 | 检查位置 |
+| --- | --- |
+| 登录不可用、`mysql=disabled` | 是否启用 `compose.data.yaml` 或完整离线包；Go 是否收到 `MYSQL_DSN` / `JWT_SECRET` |
+| 数据库密码错误 | 已有数据卷保留初次创建的账号密码；不要通过删卷重建解决 |
+| `port is already allocated` | 检查端口所属服务；已有 Nginx / Caddy 时使用 existing-proxy 配置 |
+| 网页能打开，但研究失败 | Python 日志、模型 / Tavily 凭据和服务器出网能力 |
+| 返回 `429` | 等待并发名额或频率窗口释放，不重复刷新提交 |
+| 研究长时间后超时 | Python / Go 预算、代理 320 秒读取超时，以及前置 CDN 限制 |
+| 修改网页后仍是旧页面 | 是否重新构建并部署 Go 镜像，随后刷新浏览器 |
+| `no matching manifest` 或架构错误 | 核对服务器架构，重新构建和导出对应平台 |
+| `--pull never` 报缺少镜像 | 是否导入了所选 Compose 需要的全部镜像，名称与标签是否对应 |
 
-`GOMAXPROCS=1` 和 `go build -p 1 -v` 让 Go 串行编译依赖并输出包名；BuildKit 缓存挂载保留 Go 编译结果，后端源码修改后可复用未变化的依赖。`go mod download` 只下载模块源码，不能替代编译缓存。这些措施不改变应用运行时并发，也不是构建的 CPU 或内存硬上限；首次构建和缓存清理后仍要重新编译。[Docker 缓存说明](https://docs.docker.com/build/cache/optimize/)
-
-如果构建期间 SSH 无响应，先尝试在原构建终端按 Ctrl+C 停止构建，再通过云控制台的命令助手或 VNC 检查 `free -h`、`uptime` 和内核日志。CPU 使用率高或控制台某一次内存读数，不能单独证明发生了内存耗尽；不要同时重复发起多个构建。
-
-| 现象 | 检查方法 |
-|---|---|
-| 域名打不开或证书申请失败 | 确认 DNS 的 A/AAAA、云安全组、80/443 端口占用，再查看 Caddy 日志 |
-| `port is already allocated` | 服务器已经有程序占用 80 或 443；先确认现有站点用途，再调整端口或反向代理方案 |
-| Go 或 Python 显示 `unhealthy` | 查看对应容器日志；确认依赖下载完成，配置文件格式正确 |
-| 网页正常但研究失败 | 查看 `agent-service` 日志，确认服务器的模型和 Tavily 凭据及网络；网页不会显示完整内部异常 |
-| 返回 429 | 服务同时处理的请求过多或短时间请求过密，稍后重试 |
-| 约 5 分钟后超时 | 请求没有在总预算内完成，缩小问题范围；若前面还有 CDN/代理，也检查它的等待上限 |
-| 修改页面后仍是旧版本 | 按所选方案重新构建后端镜像并更新容器，然后强制刷新浏览器 |
-| 构建时镜像或依赖下载失败 | 分别检查 Docker Hub、ghcr.io、PyPI、Go 模块下载地址的网络；这与模型 Key 无关 |
-
-## 部署文件说明
-
-| 文件 | 作用 |
-|---|---|
-| 根目录 `compose.yaml` | 三个服务的启动顺序、内部地址、端口、健康检查和证书卷 |
-| `deploy/agent-service.Dockerfile` | 使用 Python 3.12 和锁定依赖构建 Python 服务；以非 root 用户运行 |
-| `deploy/backend.Dockerfile` | 使用 Go 1.26.4 交叉编译，排除 MsgPack 并缓存编译结果，打包静态前端；以非 root 用户运行 |
-| `deploy/compose.existing-proxy.yaml` | 共用已有反向代理时，仅将 Go 映射到宿主机回环地址 |
-| `deploy/Caddyfile` | 反向代理到 Go；研究请求等待上限为 320 秒 |
-| `deploy/.env.example` | 域名和服务限制的示例 |
-| `deploy/agent.env.example` | 模型和 Tavily 凭据的占位示例 |
-| 根目录 `.dockerignore` | 排除真实 `.env`、本地虚拟环境、Git 数据和测试文件 |
-
-本文的默认配置未启用用户数据库。叠加 [compose.data.yaml](compose.data.yaml) 后，可在网页注册登录，保存和查询个人研究记录；账号接口、数据库迁移和任务缓存机制见 [后端说明](../backend/README.md)，网页操作见 [前端说明](../frontend/README.md#账号操作)。所有用户仍共享服务端 API 额度，进程级请求限制不是个人配额或分布式限流。匿名网页结果刷新后仍会消失。
+更多接口与缓存机制见 [后端说明](../backend/README.md)，研究限制见 [Agent 说明](../agent-service/README.md)，网页操作见 [前端说明](../frontend/README.md)。

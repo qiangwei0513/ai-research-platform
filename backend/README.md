@@ -25,12 +25,18 @@ curl http://127.0.0.1:8080/ping
 
 ### 启用账号与历史
 
-准备可连接的 MySQL，提前创建数据库，并确保账号具有建表和读写权限；Redis 可选。
+可以使用已有 MySQL（提前创建数据库并提供建表和读写权限），也可以从项目根目录启动项目自带的开发服务：
+
+```bash
+docker compose -f deploy/compose.dev-data.yaml up -d --wait
+```
+
+该配置提供本机 `13306` 端口的 MySQL 和 `16379` 端口的 Redis，与下面的 `.env.example` 一致。Redis 是可选缓存，MySQL 是账号和历史的必要依赖。
 
 在 `backend` 目录执行（已有 `.env` 时直接编辑）：
 
 ```bash
-cp .env.example .env
+test -f .env || cp .env.example .env
 openssl rand -hex 32
 ```
 
@@ -152,11 +158,14 @@ Redis 仅缓存单个任务状态，键格式为 `{CACHE_PREFIX}:task:v1:{user_i
 
 ```text
 backend/
-├── main.go               # 服务启动、路由与研究请求转发
-├── web.go                # 限流、安全响应头与静态文件服务
+├── main.go              # 服务生命周期、依赖初始化与路由注册
+├── config.go            # 字符串和整数环境变量解析
+├── research.go          # 问答/研究请求、Python 调用、结果与失败落库
+├── limits.go            # 请求大小、并发与频率限制
+├── web.go               # 安全响应头与静态文件服务
 ├── internal/
-│   ├── handler/          # 账号、认证与任务查询接口
-│   ├── service/          # 任务缓存、状态更新与过期处理
+│   ├── handler/         # 账号、认证与任务查询接口
+│   ├── service/         # 任务缓存、状态更新与过期处理
 │   ├── repository/      # MySQL 读写和数据库迁移
 │   └── model/           # 用户、任务、报告与阶段记录模型
 └── integration_test.go  # 接口与持久化集成测试
@@ -171,12 +180,15 @@ go test -race ./...
 go vet ./...
 ```
 
-依赖真实 MySQL 或 Redis 的测试在缺少相应环境变量时会跳过。要运行完整集成测试，先准备独立的测试数据库和 Redis，再执行（替换为实际连接信息）：
+依赖真实 MySQL 或 Redis 的测试在缺少相应环境变量时会跳过。完整集成测试使用独立的测试服务；从项目根目录执行：
 
 ```bash
-TEST_MYSQL_DSN='research:test-password@tcp(127.0.0.1:3306)/research_test' \
-TEST_REDIS_URL='redis://127.0.0.1:6379/1' \
-go test -race ./...
+docker compose -f deploy/compose.test.yaml up -d --wait
+cd backend
+TEST_MYSQL_DSN='research:test-password@tcp(127.0.0.1:23306)/research_test?charset=utf8mb4' \
+TEST_REDIS_URL='redis://127.0.0.1:26379/0' \
+go test -count=1 -race ./...
+go vet ./...
 ```
 
-测试会写入数据，使用测试专用实例或数据库。研究接口测试使用 Agent 替身，无需调用真实模型。
+测试会写入数据，使用测试专用实例或数据库。研究接口测试使用 Agent 替身，无需调用真实模型。该 Compose 将 MySQL 数据放在临时文件系统中，端口与开发服务不同；完成各模块测试后，从项目根目录执行 `docker compose -f deploy/compose.test.yaml down`。不要替换为开发或生产连接。

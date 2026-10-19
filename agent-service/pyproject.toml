@@ -1,7 +1,7 @@
 [project]
 name = "agent-service"
 version = "0.1.0"
-description = "Add your description here"
+description = "FastAPI research service with planning, web search and cited reports"
 readme = "README.md"
 authors = [
     { name = "Luananwei", email = "2403_88190568@noreply.gitcode.com" }
@@ -17,12 +17,8 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
 ]
 
-[project.scripts]
-agent-service = "agent_service:main"
-
-[build-system]
-requires = ["uv_build>=0.12.10,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv]
+package = false
 
 [dependency-groups]
 dev = [
