@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Literal
+from datetime import datetime
 
 class SearchItem(BaseModel):
     query: str = Field(
@@ -26,6 +27,8 @@ class SearchTaskResult(BaseModel):
     executed_queries: list[str] = Field(default_factory=list)
     summary: str | None = None
     error: str | None = None
+    cache_status: str | None = None
+    fetched_at: str | None = None
 
 
 class SearchSource(BaseModel):
@@ -55,3 +58,11 @@ class ReportDraft(BaseModel):
     analysis: ReportSection
     applicability: ReportSection
     limitations: ReportSection
+
+
+class AgentRun(BaseModel):
+    stage: str
+    status: Literal["running", "succeeded", "failed", "cancelled"]
+    started_at: datetime
+    finished_at: datetime
+    error_code: str = ""

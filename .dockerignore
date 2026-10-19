@@ -13,5 +13,9 @@
 **/*.log
 **/.DS_Store
 backend/backend
+dist/
+build/
+**/*.tar
+**/*.tar.gz
 **/*.pem
 **/*.key

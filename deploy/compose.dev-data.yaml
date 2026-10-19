@@ -1,0 +1,27 @@
+# 单独启动开发数据库：docker compose -f deploy/compose.dev-data.yaml up -d
+# 仅用于本机开发；固定密码不可用于公网部署。
+name: ai-research-dev-data
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: research
+      MYSQL_USER: research
+      MYSQL_PASSWORD: dev-research-password
+      MYSQL_ROOT_PASSWORD: dev-root-password
+    ports:
+      - "127.0.0.1:13306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h 127.0.0.1 -u research -D research -e 'SELECT 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:16379:6379"
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+volumes:
+  mysql_data:

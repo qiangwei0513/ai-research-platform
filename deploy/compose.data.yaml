@@ -1,0 +1,51 @@
+# 与根 compose.yaml 合并，启用 V3/V4；不向宿主机公开 MySQL/Redis。
+services:
+  backend:
+    environment:
+      MYSQL_DSN: "research:${MYSQL_PASSWORD:?set MYSQL_PASSWORD}@tcp(mysql:3306)/research?charset=utf8mb4"
+      JWT_SECRET: "${JWT_SECRET:?set JWT_SECRET}"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0"
+      CACHE_PREFIX: "arp"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_started
+  agent-service:
+    environment:
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0"
+      CACHE_PREFIX: "arp"
+      SEARCH_CACHE_TTL_SECONDS: "${SEARCH_CACHE_TTL_SECONDS:-900}"
+    depends_on:
+      redis:
+        condition: service_started
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: research
+      MYSQL_USER: research
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?set MYSQL_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h 127.0.0.1 -u research -D research -e 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 30s
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD}"
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory 128mb --maxmemory-policy allkeys-lru --save '' --appendonly no"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  mysql_data:

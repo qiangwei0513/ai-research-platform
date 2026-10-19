@@ -1,21 +1,79 @@
-# Python 虚拟环境和缓存
+# 本地配置与密钥：只提交不含真实凭据的示例文件
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
+.envrc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Python 虚拟环境、依赖和缓存
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.uv-cache/
+*.egg-info/
 
-# 本地环境变量文件
-.env
-.env.*
-!.env.example
+# 前端测试依赖；package.json 和 package-lock.json 需要提交
+node_modules/
+.npm/
 
-# 构建产物
+# 编译产物
 build/
 dist/
-*.egg-info/
 /backend/backend
+/backend/backend.exe
+/backend/bin/
+/backend/*.test
 
-# 日志和系统文件
+# Docker 镜像导出、离线部署包及其校验文件，不上传 GitHub
+# Dockerfile、compose*.yaml 和部署说明仍需提交
+*.tar
+*.tar.gz
+*.tar.zst
+*.tgz
+*.tar.sha256
+*.tar.gz.sha256
+*.tar.zst.sha256
+*.tgz.sha256
+
+# 本地数据库备份与运行数据；不要忽略 migrations/ 下的 SQL 源码
+backups/
+/data/
+/deploy/data/
+dump.rdb
+appendonly.aof
+appendonlydir/
+
+# 测试覆盖率和测试输出，不忽略测试源码
+.coverage
+.coverage.*
+htmlcov/
+coverage/
+coverage.out
+test-results/
+playwright-report/
+
+# 日志、编辑器和操作系统产生的本地文件
 *.log
+*.log.*
+*.pid
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 .DS_Store
+._*
+Thumbs.db
+Desktop.ini

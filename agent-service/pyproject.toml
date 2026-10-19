@@ -13,6 +13,7 @@ dependencies = [
     "openai-agents>=0.23.1",
     "pydantic>=2.14.0",
     "python-dotenv>=1.2.4",
+    "redis>=6.4,<9",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -22,3 +23,9 @@ agent-service = "agent_service:main"
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=1,<2",
+]

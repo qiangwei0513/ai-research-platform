@@ -1,0 +1,24 @@
+# 独立测试实例：无持久化卷，避免集成测试接触开发/生产数据。
+name: ai-research-v4-tests
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: research_test
+      MYSQL_USER: research
+      MYSQL_PASSWORD: test-password
+      MYSQL_ROOT_PASSWORD: test-root-password
+    ports:
+      - "127.0.0.1:23306:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h 127.0.0.1 -u research -D research_test -e 'SELECT 1' >/dev/null"]
+      interval: 2s
+      timeout: 3s
+      retries: 45
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:26379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]

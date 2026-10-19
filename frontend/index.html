@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/assets/styles.css">
   <script defer src="/assets/vendor/marked.umd.js"></script>
   <script defer src="/assets/vendor/purify.min.js"></script>
+  <script defer src="/assets/account.js"></script>
   <script defer src="/assets/app.js"></script>
 </head>
 <body>
@@ -23,10 +24,13 @@
       <div class="header-right">
         <span class="service-status" id="service-status"><span class="status-dot"></span><span id="service-label">正在连接服务</span></span>
         <button class="text-button help-button" id="help-button" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#help"></use></svg>使用说明</button>
+        <button class="text-button" id="history-button" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#history"></use></svg>我的历史</button>
+        <button class="account-trigger" id="account-button" type="button" aria-haspopup="dialog"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#user"></use></svg><span id="account-label">登录 / 注册</span></button>
       </div>
     </header>
 
     <main>
+      <p class="account-notice" id="account-notice" role="status" hidden></p>
       <section class="intro" aria-labelledby="page-title">
         <div>
           <p class="eyebrow"><span></span> 从提问，到理解</p>
@@ -58,8 +62,9 @@
               <div class="textarea-meta"><span id="query-hint">越具体的问题，越有用的答案</span><span id="query-count">0 / 5000</span></div>
             </div>
             <p class="form-error" id="form-error" role="alert" hidden></p>
+            <label class="fresh-option"><input type="checkbox" id="fresh-search"><span>重新搜索最新资料<small>跳过近期搜索缓存，可能需要更久</small></span></label>
             <button class="primary-button" id="submit-button" type="submit"><span id="submit-label">生成研究报告</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg></button>
-            <div class="submit-hint"><span>无需登录，即刻开始</span><kbd id="shortcut-hint">Ctrl ↵</kbd></div>
+            <div class="submit-hint"><span id="save-hint">匿名体验 · 登录后自动保存</span><kbd id="shortcut-hint">Ctrl ↵</kbd></div>
             <div class="examples">
               <p class="small-heading">还没想好？从这里开始</p>
               <button type="button" class="example-button" data-example="研究 Go context 的取消信号如何传播，结合官方文档解释实现原理、使用方式与常见误区。"><span class="example-category">技术原理</span><span>Go context 如何传播取消信号？</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#diagonal"></use></svg></button>
@@ -67,7 +72,7 @@
               <button type="button" class="example-button" data-example="研究蝴蝶效应的科学含义、起源与适用范围，辨析日常生活中常见的误解，并提供可靠资料。"><span class="example-category">科学探索</span><span>蝴蝶效应，究竟意味着什么？</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#diagonal"></use></svg></button>
             </div>
           </form>
-          <p class="local-note"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#lock"></use></svg>页面不保存历史，离开前记得下载报告。</p>
+          <p class="local-note"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#lock"></use></svg><span id="privacy-note">匿名结果仅在本页显示；登录后可在「我的历史」中回看。</span></p>
         </aside>
 
         <section class="result-card" id="result-card" aria-labelledby="result-heading" aria-busy="false">
@@ -103,10 +108,11 @@
             <h3 id="error-title" tabindex="-1">这次探索暂时中断了</h3>
             <p id="error-message"></p>
             <button class="secondary-button" id="retry-button" type="button">重新尝试<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#refresh"></use></svg></button>
+            <button class="text-button" id="error-history-button" type="button" hidden>查看已保存的任务状态</button>
           </div>
 
           <div id="success-state" hidden>
-            <div class="result-context"><p id="result-query"></p><div class="result-meta"><span class="result-mode" id="result-mode"></span><span id="result-duration"></span><span id="result-source-count"></span></div></div>
+            <div class="result-context"><p id="result-query"></p><div class="result-meta"><span class="result-mode" id="result-mode"></span><span id="result-duration"></span><span id="result-source-count"></span><span id="result-saved"></span></div></div>
             <div class="partial-notice" id="partial-notice" hidden><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#alert"></use></svg><span>部分搜索未取得资料，报告基于已获得的来源生成。你可以在研究计划中查看详情。</span></div>
             <div class="result-tabs" role="tablist" aria-label="研究结果内容" id="result-tabs">
               <button type="button" role="tab" id="tab-report" aria-controls="panel-report" aria-selected="true" tabindex="0" data-tab="report">研究报告</button>
@@ -129,8 +135,53 @@
   <dialog id="help-dialog" aria-labelledby="help-title">
     <div class="dialog-header"><p class="eyebrow">GETTING STARTED</p><button class="icon-button" id="close-help" type="button" aria-label="关闭使用说明"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#close"></use></svg></button></div>
     <h2 id="help-title">从一个具体的问题开始</h2>
-    <ol class="help-steps"><li><strong>选择一种探索方式</strong><p>「深入研究」会先规划，再搜索并撰写报告；「快速问答」直接回答，必要时调用搜索工具。</p></li><li><strong>告诉我们你想了解什么</strong><p>加入研究范围、使用场景或希望比较的方案，能帮助 AI 更准确地理解问题。</p></li><li><strong>阅读答案，也检查来源</strong><p>研究完成后可以查看搜索计划、参考来源，复制或下载 Markdown 报告。</p></li></ol>
-    <div class="help-note">每次提问独立处理，不继承上一次对话。页面不保存历史，刷新或关闭后结果会消失。研究仅依据搜索返回的片段与摘要，未抓取网页全文。</div>
+    <ol class="help-steps"><li><strong>登录，让探索有迹可循</strong><p>右上角注册或登录后，新提交的问题和结果会保存在「我的历史」。也可以匿名体验，离开前记得下载结果。</p></li><li><strong>选择一种探索方式</strong><p>「深入研究」会先规划，再搜索并撰写报告；「快速问答」直接回答，必要时调用搜索工具。勾选「重新搜索最新资料」可跳过近期搜索缓存。</p></li><li><strong>阅读答案，也检查来源</strong><p>研究完成后可以查看搜索计划、参考来源，复制或下载 Markdown 报告。历史任务中可以查看状态、阶段耗时和失败原因。</p></li></ol>
+    <div class="help-note">每次提问独立处理，不继承上一次对话。提交后请保持页面打开；刷新后可查询已保存的任务，但当前不支持后台续跑或取消。研究仅依据搜索返回的片段与摘要，未抓取网页全文。</div>
+  </dialog>
+  <dialog id="account-dialog" aria-labelledby="account-title">
+    <div class="dialog-header"><p class="eyebrow">YOUR RESEARCH SPACE</p><button class="icon-button" id="close-account" type="button" aria-label="关闭账号窗口"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#close"></use></svg></button></div>
+    <h2 id="account-title">欢迎回到知序</h2>
+    <div id="auth-view">
+      <p class="dialog-description">保存每一次提问，随时回看自己的研究。</p>
+      <div class="auth-switch" role="group" aria-label="选择登录或注册"><button type="button" id="auth-login" aria-pressed="true">登录</button><button type="button" id="auth-register" aria-pressed="false">注册</button></div>
+      <form id="auth-form">
+        <fieldset id="auth-fields">
+          <label for="auth-email">邮箱</label><input id="auth-email" name="email" type="email" autocomplete="username" maxlength="254" placeholder="you@example.com" required>
+          <label for="auth-password">密码</label><input id="auth-password" name="password" type="password" autocomplete="current-password" maxlength="72" aria-describedby="password-hint" required>
+          <p class="field-hint" id="password-hint">8～72 字节；中文和部分符号会占多个字节。</p>
+          <div id="confirm-field" hidden><label for="auth-confirm">确认密码</label><input id="auth-confirm" name="confirm" type="password" autocomplete="new-password" maxlength="72" disabled></div>
+        </fieldset>
+        <p class="form-error" id="auth-error" role="alert" hidden></p>
+        <button class="primary-button" id="auth-submit" type="submit"><span id="auth-submit-label">登录并继续</span><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg></button>
+      </form>
+      <p class="field-hint session-hint">登录状态保存在当前标签页，最长 24 小时。不会保存密码。</p>
+      <button class="text-button guest-button" id="continue-guest" type="button">继续匿名使用</button>
+    </div>
+    <div id="session-view" hidden>
+      <p class="account-email" id="session-email"></p>
+      <p class="dialog-description" id="session-expiry"></p>
+      <div class="help-note">登录后提交的研究仅在你的账号下可见。退出会清除当前页面的报告，已保存的历史仍然保留。</div>
+      <button class="primary-button" id="account-history" type="button">查看我的历史<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#history"></use></svg></button>
+      <button class="text-button guest-button" id="logout-button" type="button">退出登录</button>
+    </div>
+  </dialog>
+  <dialog class="history-dialog" id="history-dialog" aria-labelledby="history-title">
+    <div class="dialog-header"><p class="eyebrow">YOUR RESEARCH LIBRARY</p><button class="icon-button" id="close-history" type="button" aria-label="关闭研究历史"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#close"></use></svg></button></div>
+    <div class="history-heading"><h2 id="history-title">我的研究历史</h2><button class="text-button" id="refresh-history" type="button"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#refresh"></use></svg>刷新状态</button></div>
+    <p class="dialog-description" id="history-description">登录后提交的问题和报告都在这里。</p>
+    <p class="form-error" id="history-error" role="alert" hidden></p>
+    <p class="history-loading" id="history-loading" role="status" hidden>正在读取历史…</p>
+    <div id="history-list-view">
+      <div class="history-empty" id="history-empty" hidden><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#document"></use></svg><h3>还没有保存的探索</h3><p>关闭窗口，开始第一次提问吧。<br>登录前的匿名结果不会自动加入历史。</p></div>
+      <div class="history-list" id="history-list"></div>
+      <nav class="history-pagination" id="history-pagination" aria-label="历史分页" hidden><button class="text-button" id="history-prev" type="button">上一页</button><span id="history-page"></span><button class="text-button" id="history-next" type="button">下一页</button></nav>
+    </div>
+    <div id="history-detail-view" hidden>
+      <button class="text-button" id="history-back" type="button">← 返回列表</button>
+      <div id="history-detail"></div>
+      <div class="history-detail-actions"><button class="primary-button" id="open-saved-report" type="button" hidden>打开报告<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg></button><button class="secondary-button" id="reuse-question" type="button">用此问题再研究</button></div>
+    </div>
+    <p class="history-footnote">进行中的任务每 5 秒更新状态。阶段记录在请求结束后保存。</p>
   </dialog>
   <noscript><div class="noscript-message">请启用 JavaScript，以使用研究助手。</div></noscript>
 </body>

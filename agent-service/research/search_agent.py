@@ -82,6 +82,8 @@ async def run_search_task(
         source_urls=list(dict.fromkeys(source.url for source in sources)),
         executed_queries=[data["query"]],
         summary=summary,
+        cache_status=data.get("cache_status"),
+        fetched_at=data.get("fetched_at"),
     )
     print(f"[search_agent] 完成：状态={task.status}，来源={len(sources)}", flush=True)
     return task, sources

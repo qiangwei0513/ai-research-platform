@@ -1,11 +1,11 @@
 "use strict";
 
-// 页面状态只留在内存中；所有模型调用都通过同源 Go 接口完成。
+// 当前报告留在内存；账号模块管理登录和服务端历史，模型调用始终经过同源 Go 接口。
 const $ = (id) => document.getElementById(id);
 const form = $("research-form");
 const queryInput = $("query");
 const tabs = [...document.querySelectorAll("[data-tab]")];
-const state = { busy: false, result: null, query: "", mode: "research", startedAt: 0 };
+const state = { busy: false, result: null, query: "", mode: "research", startedAt: 0, taskId: null, ownerId: null };
 let toastTimer;
 
 function currentMode() {
@@ -42,6 +42,8 @@ function setBusy(busy) {
   queryInput.disabled = busy;
   $("mode-switch").disabled = busy;
   $("submit-button").disabled = busy;
+  $("fresh-search").disabled = busy;
+  Account.setBusy(busy);
   document.querySelectorAll("[data-example]").forEach((button) => { button.disabled = busy; });
   if (busy) $("submit-label").textContent = state.mode === "research" ? "正在研究…" : "正在回答…";
   else updateMode();
@@ -120,6 +122,11 @@ function renderPlan(data) {
       header.append(element("span", `task-status ${status}`, { success: "已获得资料", empty: "暂无资料", failed: "搜索未完成" }[status] || "状态未知"));
     }
     card.append(header, element("p", "plan-query", item.query), element("p", "plan-reason", item.reason));
+    if (task?.cache_status) {
+      const cacheLabels = { hit: "复用近期搜索资料", miss: "本次重新获取资料", bypass: "已跳过搜索缓存", disabled: "搜索缓存未启用", error: "缓存不可用，已直接搜索" };
+      if (cacheLabels[task.cache_status]) card.append(element("p", "cache-note", cacheLabels[task.cache_status]));
+    }
+    if (task?.fetched_at && Number.isFinite(Date.parse(task.fetched_at))) card.append(element("p", "cache-note", `资料获取于 ${new Date(task.fetched_at).toLocaleString("zh-CN", { hour12: false })}`));
     if (task?.error) card.append(element("p", "task-error", "本次搜索未能完成，请结合其他来源阅读报告。"));
     if (task?.summary) {
       const details = element("details", "task-summary");
@@ -170,7 +177,7 @@ function selectTab(name, focus = false) {
   });
 }
 
-function showResult(data) {
+function showResult(data, duration = Date.now() - state.startedAt) {
   if (!data || typeof data.result !== "string" || !data.result.trim()) throw new Error("服务没有返回有效内容，请稍后重试。");
   const research = state.mode === "research";
   const hasPlan = research && data.plan && Array.isArray(data.plan.searches);
@@ -187,27 +194,15 @@ function showResult(data) {
   $("sources-count").textContent = String(sources.length);
   $("result-query").textContent = state.query;
   $("result-mode").textContent = research ? "深入研究" : "快速问答";
-  $("result-duration").textContent = `用时 ${formatElapsed(Date.now() - state.startedAt)}`;
+  $("result-duration").textContent = Number.isFinite(duration) ? `用时 ${formatElapsed(Math.max(0, duration))}` : "";
   $("result-source-count").textContent = hasSources ? `${sources.length} 个参考来源` : "";
   $("partial-notice").hidden = data.search?.status !== "partial";
+  $("result-saved").textContent = data.task_id ? "已保存到我的历史" : "匿名结果 · 请及时下载";
+  state.taskId = data.task_id || null;
   state.result = data.result;
   selectTab("report");
   setView("success");
   announce(research ? "研究已完成，可以查看报告、计划和参考来源。" : "回答已生成。");
-}
-
-function responseError(response, data) {
-  if (response.status === 429) {
-    const wait = Number(response.headers.get("Retry-After"));
-    const suffix = Number.isFinite(wait) && wait > 0 ? `请约 ${Math.min(Math.ceil(wait), 3600)} 秒后再试。` : "请稍后再试。";
-    return data?.code === "rate_limited" ? `当前请求次数已达到上限，${suffix}` : `当前使用人数较多，${suffix}`;
-  }
-  if (response.status === 504) return "本次处理超时了。试试缩小研究范围，或稍后重新尝试。";
-  if (data?.code === "no_sources") return "这次没有找到可用的搜索资料。试试更具体的关键词，或换一种提问方式。";
-  if (data?.code === "search_failed") return "搜索服务暂时未能取得资料，请稍后重试。";
-  if (response.status === 413) return "问题内容过长，请精简后重新发送。";
-  if (response.status === 400) return typeof data?.error === "string" ? data.error : "问题格式不正确，请修改后重试。";
-  return "研究服务暂时无法完成请求，请稍后再试。";
 }
 
 async function submitResearch(event) {
@@ -220,11 +215,15 @@ async function submitResearch(event) {
     queryInput.focus();
     return;
   }
+  resetResult(false);
   state.query = query;
   state.mode = currentMode();
   state.result = null;
+  state.taskId = null;
+  state.ownerId = Account.currentUser()?.id || null;
   state.startedAt = Date.now();
   $("form-error").hidden = true;
+  $("error-history-button").hidden = true;
   $("waiting-title").textContent = state.mode === "research" ? "正在研究你的问题" : "正在整理回答";
   $("waiting-description").textContent = state.mode === "research" ? "报告、计划和参考来源将在完成后一起呈现。" : "答案将在处理完成后呈现，请稍等片刻。";
   $("waiting-note").textContent = state.mode === "research" ? "深入研究最多等待约 5 分钟，请保持页面打开。" : "快速问答最多等待约 2 分钟，请保持页面打开。";
@@ -234,33 +233,65 @@ async function submitResearch(event) {
   announce($("waiting-title").textContent);
   if (window.matchMedia("(max-width: 800px)").matches) $("result-card").scrollIntoView({ behavior: "auto", block: "start" });
   const timer = setInterval(() => { $("elapsed").textContent = formatElapsed(Date.now() - state.startedAt); }, 1000);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), state.mode === "research" ? 320000 : 140000);
   try {
-    const response = await fetch("/api/research", {
+    const data = await Account.api("/api/research", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ query, mode: state.mode }),
-      signal: controller.signal,
-      cache: "no-store",
+      body: { query, mode: state.mode, fresh: $("fresh-search").checked },
+      auth: "optional",
+      timeout: state.mode === "research" ? 320000 : 140000,
     });
-    let data;
-    try { data = await response.json(); } catch { data = null; }
-    if (!response.ok) throw new Error(responseError(response, data));
     showResult(data);
   } catch (error) {
-    let message = error instanceof Error ? error.message : "请求失败，请稍后重试。";
-    if (controller.signal.aborted) message = "等待时间过长，请稍后重新尝试，或缩小研究范围。";
-    else if (error instanceof TypeError) message = "暂时连接不上服务，请检查网络后重试。";
+    const message = error instanceof Error ? error.message : "请求失败，请稍后重试。";
+    state.taskId = error.taskId || null;
+    $("error-history-button").hidden = !Account.currentUser();
     $("error-message").textContent = message;
     setView("error");
     announce(`请求未完成。${message}`);
   } finally {
     clearInterval(timer);
-    clearTimeout(timeout);
     setBusy(false);
     if (!$("error-state").hidden) $("error-title").focus({ preventScroll: true });
   }
+}
+
+function resetResult(clearQuery = true) {
+  state.result = null;
+  state.query = "";
+  state.taskId = null;
+  state.ownerId = null;
+  if (clearQuery) queryInput.value = "";
+  for (const name of ["report", "plan", "sources"]) $(`panel-${name}`).replaceChildren();
+  $("result-query").textContent = "";
+  $("error-message").textContent = "";
+  $("error-history-button").hidden = true;
+  setView("empty");
+  updateInput();
+}
+
+function useSavedQuestion(task) {
+  resetResult();
+  queryInput.value = task.query;
+  form.elements.mode.value = task.mode === "chat" ? "chat" : "research";
+  updateInput();
+  updateMode();
+  queryInput.focus();
+  queryInput.scrollIntoView({ behavior: "auto", block: "center" });
+}
+
+function openSavedReport(task, report) {
+  // 先校验响应，避免坏响应覆盖正在阅读的报告。
+  if (typeof report.result !== "string" || !report.result.trim()) throw new Error("这份报告暂不可读，请刷新后重试。");
+  state.query = task.query;
+  state.mode = task.mode;
+  state.ownerId = Account.currentUser()?.id || null;
+  state.startedAt = Date.parse(task.started_at);
+  queryInput.value = task.query;
+  form.elements.mode.value = task.mode === "chat" ? "chat" : "research";
+  updateInput();
+  updateMode();
+  showResult({ ...report, task_id: task.id }, Date.parse(task.finished_at) - state.startedAt);
+  $("result-card").scrollIntoView({ behavior: "auto", block: "start" });
 }
 
 async function copyReport() {
@@ -340,15 +371,11 @@ tabs.forEach((tab) => {
   });
 });
 $("retry-button").addEventListener("click", () => form.requestSubmit());
+$("error-history-button").addEventListener("click", Account.openHistory);
 $("copy-button").addEventListener("click", copyReport);
 $("download-button").addEventListener("click", downloadReport);
 $("reset-button").addEventListener("click", () => {
-  state.result = null;
-  state.query = "";
-  queryInput.value = "";
-  for (const name of ["report", "plan", "sources"]) $(`panel-${name}`).replaceChildren();
-  setView("empty");
-  updateInput();
+  resetResult();
   queryInput.focus();
   announce("可以开始新的研究。");
 });
@@ -366,6 +393,12 @@ window.addEventListener("offline", () => {
   $("service-label").textContent = "网络已断开";
 });
 $("shortcut-hint").textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘ ↵" : "Ctrl ↵";
+Account.init({
+  onNotice: notify,
+  onOpenReport: openSavedReport,
+  onReuseQuestion: useSavedQuestion,
+  onSessionEnd: () => { if (state.ownerId && !state.busy) resetResult(); },
+});
 updateMode();
 updateInput();
 checkService();
