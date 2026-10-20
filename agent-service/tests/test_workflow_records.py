@@ -79,3 +79,54 @@ async def test_http_modes_include_records(stages, monkeypatch):
         assert len(research.json()["runs"]) == 3
         assert stages == [True, True]
     assert not bypass_search_cache.get()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_cancels_agent_and_cleans_up_context(monkeypatch):
+    from fastapi import HTTPException, Request
+
+    entered, finished, disconnect = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def answer(query):
+        assert bypass_search_cache.get()
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    async def receive():
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    monkeypatch.setattr(main, "run_research", answer)
+    call = asyncio.create_task(main.research(
+        main.ResearchRequest(query="disconnect", fresh=True),
+        Request({"type": "http"}, receive),
+    ))
+    await asyncio.wait_for(entered.wait(), 1)
+    disconnect.set()
+    with pytest.raises(HTTPException) as exc:
+        await asyncio.wait_for(call, 1)
+    assert exc.value.status_code == 499
+    assert finished.is_set()
+    assert not bypass_search_cache.get()
+
+
+@pytest.mark.asyncio
+async def test_http_timeout_stops_agent_and_disconnect_listener(monkeypatch):
+    finished = asyncio.Event()
+
+    async def answer(query):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(main, "run_research", answer)
+    monkeypatch.setattr(main, "CHAT_TIMEOUT", 0.01)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test") as client:
+        response = await asyncio.wait_for(client.post("/research", json={"query": "slow"}), 1)
+    assert response.status_code == 504
+    assert response.json()["detail"]["code"] == "chat_timeout"
+    assert finished.is_set()

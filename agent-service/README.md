@@ -217,3 +217,9 @@ TEST_REDIS_URL=redis://127.0.0.1:26379/0 uv run python -m pytest -q
 ```
 
 完成所有模块测试后，从项目根目录执行 `docker compose -f deploy/compose.test.yaml down`。该测试配置不挂载开发数据库的数据卷，不要把测试连接改为开发或生产数据库。
+
+## V5 Worker 调用与取消
+
+Go Worker 复用 `POST /research`，通过 `X-Task-ID` 携带任务标识（用于串联调用，Python 本身不做任务持久化或队列消费）。FastAPI 路由将实际执行与 ASGI 断连监听并行等待：调用方断开后取消本地工作流协程，并回收监听任务。数据库终态和重试仍由 Go 决定；第三方已经接受的模型请求可能继续产生用量。
+
+`tests/test_workflow_records.py` 新增断连和超时测试，确认 Agent 子协程会被取消，普通 HTTP 成功响应也能正确结束监听。

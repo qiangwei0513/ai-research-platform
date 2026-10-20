@@ -3,7 +3,7 @@ import logging
 from typing import Literal
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from research.research_agent import run_research
@@ -42,8 +42,7 @@ async def health():
 
 
 # 接收问题，调用 Agent，返回答案
-@app.post("/research", response_model=ResearchResponse, response_model_exclude_none=True)
-async def research(request: ResearchRequest):
+async def execute_research(request: ResearchRequest):
     started = datetime.now(timezone.utc)
     cache_token = bypass_search_cache.set(request.fresh or needs_fresh_search(request.query))
     def chat_runs(status, code=""):
@@ -84,3 +83,33 @@ async def research(request: ResearchRequest):
         bypass_search_cache.reset(cache_token)
 
     return ResearchResponse(result=answer, mode="chat", runs=chat_runs("succeeded"))
+
+
+async def wait_for_disconnect(request: Request):
+    # FastAPI has already consumed the JSON body. Await the ASGI disconnect event
+    # directly; polling is_disconnected() uses a nested cancellation scope which
+    # can swallow task cancellation in an in-process ASGI transport.
+    while True:
+        message = await request.receive()
+        if message["type"] == "http.disconnect":
+            return
+
+
+@app.post("/research", response_model=ResearchResponse, response_model_exclude_none=True)
+async def research(payload: ResearchRequest, request: Request):
+    # Worker cancellation closes this HTTP connection. Stop local Agent tasks too;
+    # a remote model provider may still finish a request already accepted by it.
+    execution = asyncio.create_task(execute_research(payload))
+    disconnected = asyncio.create_task(wait_for_disconnect(request))
+    try:
+        done, _ = await asyncio.wait(
+            {execution, disconnected}, return_when=asyncio.FIRST_COMPLETED
+        )
+        if execution in done:
+            return await execution
+        raise HTTPException(status_code=499, detail="调用方已断开连接")
+    finally:
+        for task in (execution, disconnected):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(execution, disconnected, return_exceptions=True)
