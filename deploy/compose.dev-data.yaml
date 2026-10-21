@@ -23,5 +23,13 @@ services:
     ports:
       - "127.0.0.1:16379:6379"
     command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+  redis-queue:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:16380:6379"
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - queue_data:/data
 volumes:
   mysql_data:
+  queue_data:

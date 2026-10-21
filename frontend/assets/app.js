@@ -7,6 +7,21 @@ const queryInput = $("query");
 const tabs = [...document.querySelectorAll("[data-tab]")];
 const state = { busy: false, result: null, query: "", mode: "research", startedAt: 0, taskId: null, ownerId: null };
 let toastTimer;
+let taskWatchTimer;
+let taskWatchVersion = 0;
+let pendingSubmission = null;
+let stopTaskEvents;
+let taskElapsedTimer;
+const activeTaskKey = "zhixu.activeTask.v1";
+
+function rememberTask() {
+  try {
+    if (state.taskId && state.ownerId) sessionStorage.setItem(activeTaskKey, JSON.stringify({ id: state.taskId, ownerId: state.ownerId }));
+    else sessionStorage.removeItem(activeTaskKey);
+  } catch { /* The history API remains available without browser storage. */ }
+}
+
+function forgetTask() { try { sessionStorage.removeItem(activeTaskKey); } catch {} }
 
 function currentMode() {
   return form.elements.mode.value;
@@ -234,16 +249,35 @@ async function submitResearch(event) {
   if (window.matchMedia("(max-width: 800px)").matches) $("result-card").scrollIntoView({ behavior: "auto", block: "start" });
   const timer = setInterval(() => { $("elapsed").textContent = formatElapsed(Date.now() - state.startedAt); }, 1000);
   try {
-    const data = await Account.api("/api/research", {
-      method: "POST",
-      body: { query, mode: state.mode, fresh: $("fresh-search").checked },
-      auth: "optional",
-      timeout: state.mode === "research" ? 320000 : 140000,
-    });
-    showResult(data);
+    const body = { query, mode: state.mode, fresh: $("fresh-search").checked };
+    const health = state.ownerId ? await Account.api("/health", { auth: "none" }) : null;
+    if (health) Account.setEventSupport(health.task_events);
+    if (health?.async_tasks) {
+      const fingerprint = JSON.stringify([state.ownerId, body]);
+      if (pendingSubmission?.fingerprint !== fingerprint) {
+        // getRandomValues also works when testing through a plain HTTP server IP.
+        const key = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+        pendingSubmission = { fingerprint, key };
+      }
+      const accepted = await Account.api("/api/tasks", { method: "POST", body, idempotencyKey: pendingSubmission.key });
+      state.taskId = accepted.task_id;
+      if (!state.taskId) throw new Error("服务未返回任务编号，请先在历史中检查是否已提交。");
+      pendingSubmission = null;
+      rememberTask();
+      $("waiting-title").textContent = "任务已提交";
+      $("waiting-note").textContent = "任务在后台执行，离开页面不会停止。你可以继续提问，或稍后从历史中查看结果。";
+      $("async-actions").hidden = false;
+      watchTask(state.taskId, taskWatchVersion);
+    } else {
+      const data = await Account.api("/api/research", {
+        method: "POST", body, auth: "optional",
+        timeout: state.mode === "research" ? 320000 : 140000,
+      });
+      showResult(data);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "请求失败，请稍后重试。";
-    state.taskId = error.taskId || null;
+    state.taskId = error.taskId || state.taskId;
     $("error-history-button").hidden = !Account.currentUser();
     $("error-message").textContent = message;
     setView("error");
@@ -255,11 +289,111 @@ async function submitResearch(event) {
   }
 }
 
+function stopTaskWatch() {
+  stopTaskEvents?.();
+  stopTaskEvents = null;
+  taskWatchVersion++;
+  clearTimeout(taskWatchTimer);
+  clearInterval(taskElapsedTimer);
+  $("async-actions").hidden = true;
+}
+
+async function watchTask(id, ticket) {
+  if (ticket !== taskWatchVersion) return;
+  clearInterval(taskElapsedTimer);
+  taskElapsedTimer = setInterval(() => {
+    if (ticket === taskWatchVersion) $("elapsed").textContent = formatElapsed(Date.now() - state.startedAt);
+  }, 1000);
+  if (await Account.canStream()) {
+    if (ticket !== taskWatchVersion || Account.currentUser()?.id !== state.ownerId) return;
+    stopTaskEvents?.();
+    let current = { id, mode: state.mode, started_at: new Date(state.startedAt).toISOString() };
+    stopTaskEvents = Account.followTask(id, {
+      onEvent: (event) => {
+        if (ticket !== taskWatchVersion) return;
+        current = event.type === "snapshot" ? event.data.task : { ...current, ...event.data };
+        TaskProgress.render($("task-progress"), current, event.data.progress);
+        updateTaskWaiting(current);
+        if (TaskEvents.terminal(current.status)) {
+          // Fetch the durable task/report after the terminal event; never call the model again.
+          void pollTask(id, ticket);
+        }
+      },
+      onConnection: (status) => {
+        if (ticket === taskWatchVersion) $("event-connection").textContent = { connecting: "正在连接实时进度…", live: "实时进度已连接", reconnecting: "连接中断，正在恢复进度；后台任务继续执行。" }[status];
+      },
+      onFatal: (message) => { if (ticket === taskWatchVersion) $("event-connection").textContent = message; },
+    });
+  } else void pollTask(id, ticket);
+}
+
+function updateTaskWaiting(task) {
+  $("elapsed").textContent = formatElapsed(Date.now() - new Date(task.started_at).getTime());
+  $("waiting-title").textContent = task.status === "queued" ? "任务正在排队" : task.status === "succeeded" ? "正在读取已保存的报告" : "正在后台处理";
+  $("waiting-description").textContent = `已开始 ${task.attempt || 0} / ${task.max_attempts || 3} 次执行。搜索计数包含已结束的成功、空结果或失败搜索。`;
+  $("waiting-note").textContent = "可以继续提问或离开页面，稍后在「我的历史」查看报告。";
+}
+
+async function pollTask(id, ticket) {
+  const active = () => ticket === taskWatchVersion && Account.currentUser()?.id === state.ownerId;
+  if (!active()) return;
+  try {
+    const task = await Account.api(`/api/tasks/${encodeURIComponent(id)}`);
+    if (!active()) return;
+    $("elapsed").textContent = formatElapsed(Date.now() - new Date(task.started_at).getTime());
+    if (task.status === "succeeded") {
+      const report = await Account.api(`/api/tasks/${encodeURIComponent(id)}/report`);
+      if (!active()) return;
+      stopTaskWatch();
+      showResult({ ...report, task_id: id }, new Date(task.finished_at) - new Date(task.started_at));
+      forgetTask();
+      return;
+    }
+    if (task.status === "failed" || task.status === "cancelled") {
+      stopTaskWatch();
+      forgetTask();
+      $("error-message").textContent = task.error_message || "任务未完成，可以在历史中查看尝试记录。";
+      $("error-history-button").hidden = false;
+      setView("error");
+      return;
+    }
+    updateTaskWaiting(task);
+  } catch (error) {
+    if (!active()) return;
+    $("waiting-note").textContent = `${error.message} 已提交的任务继续在后台执行，可稍后从历史中查看。`;
+  }
+  if (active()) taskWatchTimer = setTimeout(() => pollTask(id, ticket), 5000);
+}
+
+async function cancelCurrentTask() {
+  const id = state.taskId;
+  const ticket = taskWatchVersion;
+  if (!id) return;
+  $("cancel-current-task").disabled = true;
+  try {
+    await Account.api(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+    if (ticket === taskWatchVersion) {
+      clearTimeout(taskWatchTimer);
+      await pollTask(id, ticket);
+    }
+  } catch (error) { if (ticket === taskWatchVersion) notify(error.message); }
+  finally { $("cancel-current-task").disabled = false; }
+}
+
+$("cancel-current-task").addEventListener("click", cancelCurrentTask);
+$("waiting-history").addEventListener("click", () => Account.openHistory());
+
 function resetResult(clearQuery = true) {
+  stopTaskWatch();
+  if (clearQuery) pendingSubmission = null;
   state.result = null;
   state.query = "";
   state.taskId = null;
   state.ownerId = null;
+  forgetTask();
+  $("task-progress").replaceChildren();
+  $("task-progress").hidden = true;
+  $("event-connection").textContent = "";
   if (clearQuery) queryInput.value = "";
   for (const name of ["report", "plan", "sources"]) $(`panel-${name}`).replaceChildren();
   $("result-query").textContent = "";
@@ -280,6 +414,8 @@ function useSavedQuestion(task) {
 }
 
 function openSavedReport(task, report) {
+  stopTaskWatch();
+  forgetTask();
   // 先校验响应，避免坏响应覆盖正在阅读的报告。
   if (typeof report.result !== "string" || !report.result.trim()) throw new Error("这份报告暂不可读，请刷新后重试。");
   state.query = task.query;
@@ -399,6 +535,30 @@ Account.init({
   onReuseQuestion: useSavedQuestion,
   onSessionEnd: () => { if (state.ownerId && !state.busy) resetResult(); },
 });
+async function restoreActiveTask() {
+  const ticket = taskWatchVersion;
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(activeTaskKey)); } catch { return; }
+  if (!saved?.id || saved.ownerId !== Account.currentUser()?.id) { forgetTask(); return; }
+  try {
+    const task = await Account.api(`/api/tasks/${encodeURIComponent(saved.id)}`);
+    if (ticket !== taskWatchVersion || saved.ownerId !== Account.currentUser()?.id) return;
+    state.taskId = task.id; state.ownerId = saved.ownerId;
+    state.query = task.query; state.mode = task.mode;
+    state.startedAt = Date.parse(task.started_at);
+    queryInput.value = task.query;
+    form.elements.mode.value = task.mode;
+    updateInput(); updateMode();
+    setView("waiting");
+    $("async-actions").hidden = TaskEvents.terminal(task.status);
+    updateTaskWaiting(task);
+    void watchTask(task.id, ticket);
+  } catch (error) {
+    if (ticket === taskWatchVersion) notify(`暂时无法恢复任务：${error.message} 可在历史中查看。`);
+  }
+}
+window.addEventListener("pagehide", stopTaskWatch);
+void restoreActiveTask();
 updateMode();
 updateInput();
 checkService();

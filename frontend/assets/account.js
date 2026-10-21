@@ -18,6 +18,28 @@ const Account = (() => {
   let selectedTask = null;
   let historyBusy = false;
   let callbacks = {};
+  let eventSupport;
+  let stopDetailEvents;
+
+  async function canStream() {
+    if (eventSupport === undefined) {
+      try { eventSupport = Boolean((await api("/health", { auth: "none" })).task_events); }
+      catch { return false; }
+    }
+    return eventSupport;
+  }
+
+  function followTask(id, options) {
+    const active = currentSession();
+    const token = active?.accessToken;
+    return TaskEvents.follow(id, {
+      ...options,
+      getToken: () => currentSession()?.accessToken === token ? token : null,
+      onAuthError: () => { if (session?.accessToken === token) endSession(true); },
+    });
+  }
+
+  function stopDetail() { stopDetailEvents?.(); stopDetailEvents = null; }
 
   function node(tag, className, text) {
     const el = document.createElement(tag);
@@ -69,6 +91,7 @@ const Account = (() => {
   }
 
   function clearHistory() {
+    stopDetail();
     revision++;
     clearTimeout(pollTimer);
     historyBusy = false;
@@ -153,7 +176,7 @@ const Account = (() => {
     return "服务暂时无法完成请求，请稍后再试。";
   }
 
-  async function api(path, { method = "GET", body, auth = "required", timeout = 12000 } = {}) {
+  async function api(path, { method = "GET", body, auth = "required", timeout = 12000, idempotencyKey } = {}) {
     // 过期凭据不能悄悄变成匿名请求，否则用户会误以为报告已经保存。
     const active = auth === "none" ? null : currentSession();
     if (auth !== "none" && (needsLogin || (auth === "required" && !active))) {
@@ -166,6 +189,7 @@ const Account = (() => {
     try {
       const headers = { Accept: "application/json" };
       if (body !== undefined) headers["Content-Type"] = "application/json";
+      if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
       if (token) headers.Authorization = `Bearer ${token}`;
       const response = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: controller.signal, cache: "no-store" });
       let data;
@@ -235,6 +259,7 @@ const Account = (() => {
     $("history-next").disabled = busy || page * pageSize >= total;
     $("open-saved-report").disabled = busy;
     $("reuse-question").disabled = busy;
+    $("cancel-task").disabled = busy;
   }
 
   function renderList(items) {
@@ -254,15 +279,25 @@ const Account = (() => {
     $("history-page").textContent = `第 ${page} / ${Math.max(1, Math.ceil(total / pageSize))} 页 · 共 ${total} 条`;
   }
 
-  function renderDetail(task, runs) {
+  function renderDetail(task, runs, attempts = [], progress = null) {
     const detail = $("history-detail");
     const meta = node("div", "history-detail-meta");
     meta.append(statusBadge(task.status), node("span", "", task.mode === "research" ? "深入研究" : "快速问答"));
     detail.replaceChildren(node("h3", "history-detail-query", task.query), meta, node("p", "field-hint", `提交于 ${date(task.started_at)}`));
     if (task.finished_at) detail.append(node("p", "field-hint", `结束于 ${date(task.finished_at)}`));
     detail.append(node("p", "task-identifier", `任务编号 ${task.id}`));
-    if (task.status === "running") {
-      detail.append(node("p", "help-note", "任务正在处理。当前只显示整体状态，阶段记录会在结束后保存。请保持提交问题的页面打开；刷新或关闭页面不保证任务继续执行。"));
+    if (task.async && eventSupport) {
+      const steps = node("ol", "task-progress");
+      steps.setAttribute("aria-label", "任务执行阶段");
+      TaskProgress.render(steps, task, progress);
+      detail.append(steps);
+    }
+    if (task.status === "running" || task.status === "queued") {
+      detail.append(node("p", "help-note", task.async
+        ? (task.status === "queued" ? "任务正在排队或等待重试。你可以离开页面，稍后在历史中查看结果。" : "任务正在后台处理。你可以离开页面，也可以取消这项任务。")
+        : "这是一项同步请求，请保持提交问题的页面打开。"));
+      if (task.async) detail.append(node("p", "field-hint", `已开始 ${task.attempt || 0} / ${task.max_attempts || 3} 次执行`));
+      if (task.status === "queued" && task.error_message) detail.append(node("p", "field-hint", `上次未完成：${task.error_message}`));
     } else if (task.status === "failed" || task.status === "cancelled") {
       detail.append(node("p", "task-failure", task.error_message || "本次研究没有完成，可以用此问题重新提交。"));
       if (task.error_code) detail.append(node("p", "field-hint", `错误代码：${task.error_code}`));
@@ -280,10 +315,22 @@ const Account = (() => {
       detail.append(node("h4", "run-title", "执行记录"), list);
     }
     $("open-saved-report").hidden = task.status !== "succeeded";
-    $("reuse-question").hidden = task.status === "running";
+    $("reuse-question").hidden = ["queued", "running"].includes(task.status);
+    $("cancel-task").hidden = !task.async || !["queued", "running"].includes(task.status);
+    if (attempts.length) {
+      const list = node("ol", "run-list");
+      for (const attempt of attempts) {
+        const item = node("li", "run-item");
+        item.append(node("span", "run-name", `第 ${attempt.attempt} 次执行`), statusBadge(attempt.status));
+        if (attempt.error_message) item.append(node("small", "run-error", attempt.error_message));
+        list.append(item);
+      }
+      detail.append(node("h4", "run-title", "尝试记录"), list);
+    }
   }
 
   async function loadHistory(quiet = false) {
+    stopDetail();
     clearTimeout(pollTimer);
     const ticket = ++revision;
     const id = selectedTask?.id;
@@ -299,6 +346,7 @@ const Account = (() => {
       $("history-pagination").hidden = true;
     }
     $("open-saved-report").hidden = true;
+    $("cancel-task").hidden = true;
     $("reuse-question").hidden = Boolean(id);
     setHistoryBusy(true);
     let running = false;
@@ -306,16 +354,37 @@ const Account = (() => {
       if (id) {
         const [task, records] = await Promise.all([api(`/api/tasks/${encodeURIComponent(id)}`), api(`/api/tasks/${encodeURIComponent(id)}/runs`)]);
         if (!active()) return;
+        const attempts = task.async ? await api(`/api/tasks/${encodeURIComponent(id)}/attempts`) : { items: [] };
+        const streaming = task.async && await canStream();
+        if (!active()) return;
         selectedTask = task;
-        renderDetail(task, Array.isArray(records.items) ? records.items : []);
-        running = task.status === "running";
+        renderDetail(task, Array.isArray(records.items) ? records.items : [], Array.isArray(attempts.items) ? attempts.items : []);
+        running = ["queued", "running"].includes(task.status);
+        if (streaming && running) {
+          running = false;
+          stopDetailEvents = followTask(id, {
+            onEvent: (event) => {
+              if (!active()) return;
+              const task = event.type === "snapshot" ? event.data.task : { ...selectedTask, ...event.data };
+              selectedTask = task;
+              renderDetail(task, records.items || [], attempts.items || [], event.data.progress);
+              if (TaskEvents.terminal(task.status)) void loadHistory(true);
+            },
+            onConnection: (status) => {
+              if (!active()) return;
+              $("history-error").hidden = status !== "reconnecting";
+              $("history-error").textContent = "进度连接中断，正在恢复；后台任务继续执行。";
+            },
+            onFatal: (message) => { if (active()) { $("history-error").textContent = message; $("history-error").hidden = false; } },
+          });
+        }
       } else {
         const data = await api(`/api/tasks?page=${page}&page_size=${pageSize}`);
         if (!active()) return;
         total = Number(data.total) || 0;
         const items = Array.isArray(data.items) ? data.items : [];
         renderList(items);
-        running = items.some((task) => task.status === "running");
+        running = items.some((task) => ["queued", "running"].includes(task.status));
       }
     } catch (error) {
       if (!active()) return;
@@ -328,6 +397,23 @@ const Account = (() => {
         if (running && !document.hidden) pollTimer = setTimeout(() => loadHistory(true), 5000);
       }
     }
+  }
+
+  async function cancelSelectedTask() {
+    if (historyBusy || !selectedTask?.async) return;
+    const id = selectedTask.id;
+    const ticket = ++revision;
+    clearTimeout(pollTimer);
+    setHistoryBusy(true);
+    try {
+      await api(`/api/tasks/${encodeURIComponent(id)}/cancel`, { method: "POST" });
+      if (ticket === revision && $("history-dialog").open) await loadHistory();
+    } catch (error) {
+      if (ticket === revision && $("history-dialog").open) {
+        $("history-error").textContent = error.message;
+        $("history-error").hidden = false;
+      }
+    } finally { if (ticket === revision) setHistoryBusy(false); }
   }
 
   function openHistory() {
@@ -390,12 +476,13 @@ const Account = (() => {
     $("history-button").addEventListener("click", openHistory);
     $("account-history").addEventListener("click", openHistory);
     $("close-history").addEventListener("click", () => $("history-dialog").close());
-    $("history-dialog").addEventListener("close", () => { revision++; clearTimeout(pollTimer); });
+    $("history-dialog").addEventListener("close", () => { revision++; clearTimeout(pollTimer); stopDetail(); });
     $("refresh-history").addEventListener("click", () => loadHistory());
     $("history-back").addEventListener("click", () => { selectedTask = null; loadHistory(); });
     $("history-prev").addEventListener("click", () => { if (page > 1) { page--; loadHistory(); } });
     $("history-next").addEventListener("click", () => { if (page * pageSize < total) { page++; loadHistory(); } });
     $("open-saved-report").addEventListener("click", openReport);
+    $("cancel-task").addEventListener("click", cancelSelectedTask);
     $("reuse-question").addEventListener("click", () => {
       if (!selectedTask || historyBusy) return;
       const task = selectedTask;
@@ -406,7 +493,8 @@ const Account = (() => {
       clearTimeout(pollTimer);
       if (!document.hidden && $("history-dialog").open && !historyBusy) loadHistory(true);
     });
+    window.addEventListener("pagehide", stopDetail);
   }
 
-  return { init, api, setBusy, openHistory, currentUser: () => currentSession()?.user || null };
+  return { init, api, setBusy, openHistory, followTask, canStream, setEventSupport: (value) => { eventSupport = Boolean(value); }, currentUser: () => currentSession()?.user || null };
 })();

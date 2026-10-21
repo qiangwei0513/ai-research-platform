@@ -10,6 +10,8 @@ from research.research_agent import run_research
 from research.schemas import AgentRun, SearchBundle, SearchPlan
 from research.cache import SearchCache, bypass_search_cache, needs_fresh_search
 from research.timeouts import CHAT_TIMEOUT
+from research.progress import emit_progress
+from research.streaming import ResearchStream, research_frames
 from research.workflow import WorkflowError, WorkflowTimeout, run_research_workflow
 
 
@@ -52,12 +54,14 @@ async def execute_research(request: ResearchRequest):
             outcome = await run_research_workflow(request.query, fresh=request.fresh)
             return ResearchResponse(mode="research", **outcome.model_dump())
 
+        await emit_progress("chat", 0, 1)
         answer = await asyncio.wait_for(
             run_research(request.query),
             timeout=CHAT_TIMEOUT,
         )
         if not isinstance(answer, str) or not answer.strip():
             raise ValueError("问答返回空结果")
+        await emit_progress("chat", 1, 1)
     except WorkflowTimeout as exc:
         raise HTTPException(status_code=504, detail={
             "code": "research_timeout", "stage": exc.stage, "message": str(exc),
@@ -97,6 +101,12 @@ async def wait_for_disconnect(request: Request):
 
 @app.post("/research", response_model=ResearchResponse, response_model_exclude_none=True)
 async def research(payload: ResearchRequest, request: Request):
+    if "application/x-ndjson" in request.headers.get("accept", ""):
+        return ResearchStream(
+            research_frames(execute_research, payload),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+        )
     # Worker cancellation closes this HTTP connection. Stop local Agent tasks too;
     # a remote model provider may still finish a request already accepted by it.
     execution = asyncio.create_task(execute_research(payload))

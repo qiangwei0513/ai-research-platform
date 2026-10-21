@@ -14,8 +14,17 @@ import (
 )
 
 type TaskService struct {
-	Store *repository.Store
-	Cache *TaskCache
+	Store          *repository.Store
+	Cache          *TaskCache
+	AsyncEnabled   bool
+	MaxActiveTasks int
+}
+
+func (s *TaskService) RecordProgress(ctx context.Context, job repository.Job, progress model.Progress) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := s.Store.RecordProgress(ctx, job.Task.ID, job.Token, progress)
+	return err
 }
 
 type TaskCache struct {
@@ -79,7 +88,7 @@ func (c *TaskCache) get(ctx context.Context, user, id string) (model.Task, bool)
 	if json.Unmarshal(raw, &value) != nil || value.UserID != user || value.Task.ID != id || time.Now().After(value.ValidUntil) {
 		return model.Task{}, false
 	}
-	if value.Task.Status != "running" && value.Task.Status != "succeeded" && value.Task.Status != "failed" {
+	if value.Task.Status != "queued" && value.Task.Status != "running" && value.Task.Status != "succeeded" && value.Task.Status != "failed" && value.Task.Status != "cancelled" {
 		return model.Task{}, false
 	}
 	value.Task.UserID = user
@@ -101,7 +110,7 @@ func (c *TaskCache) put(ctx context.Context, t model.Task, readStarted time.Time
 		return
 	}
 	ttl := 5 * time.Second
-	if t.Status != "running" {
+	if t.Status != "running" && t.Status != "queued" {
 		ttl = 60 * time.Second
 	}
 	// 以数据库读取前的时间计算有效期，避免延迟回填延长旧状态的寿命。
@@ -153,4 +162,9 @@ func (s *TaskService) RecoverExpired(ctx context.Context) {
 			log.Printf("[tasks] expiration failed task=%s error_type=%T", t.ID, err)
 		}
 	}
+}
+
+// Cache failure must never roll back a durable task transition.
+func (s *TaskService) CacheTask(ctx context.Context, task model.Task) {
+	s.Cache.put(ctx, task, time.Now())
 }

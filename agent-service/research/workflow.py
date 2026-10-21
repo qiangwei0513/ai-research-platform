@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from research.planner_agent import create_plan
 from research.schemas import AgentRun, SearchBundle, SearchPlan
 from research.cache import bypass_search_cache, needs_fresh_search
+from research.progress import emit_progress
 from research.searcher import execute_search_plan
 from research.timeouts import (
     PLANNER_TIMEOUT,
@@ -67,6 +68,8 @@ async def run_research_workflow(query: str, *, fresh: bool = False) -> WorkflowR
         run = AgentRun(stage=name, status="running", started_at=datetime.now(timezone.utc), finished_at=datetime.now(timezone.utc))
         runs.append(run)
         try:
+            if name != "search":
+                await emit_progress(name, 0, 1)
             async with asyncio.timeout(timeout):
                 value = await action()
         except asyncio.CancelledError:
@@ -99,6 +102,8 @@ async def run_research_workflow(query: str, *, fresh: bool = False) -> WorkflowR
         if isinstance(value, SearchBundle):
             detail = f"search_status={value.status} sources={len(value.sources)}"
         log(name, "completed", started, detail)
+        if name != "search":
+            await emit_progress(name, 1, 1)
         return value
 
     async def search(plan):

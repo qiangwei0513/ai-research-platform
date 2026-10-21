@@ -223,3 +223,19 @@ TEST_REDIS_URL=redis://127.0.0.1:26379/0 uv run python -m pytest -q
 Go Worker 复用 `POST /research`，通过 `X-Task-ID` 携带任务标识（用于串联调用，Python 本身不做任务持久化或队列消费）。FastAPI 路由将实际执行与 ASGI 断连监听并行等待：调用方断开后取消本地工作流协程，并回收监听任务。数据库终态和重试仍由 Go 决定；第三方已经接受的模型请求可能继续产生用量。
 
 `tests/test_workflow_records.py` 新增断连和超时测试，确认 Agent 子协程会被取消，普通 HTTP 成功响应也能正确结束监听。
+
+## V6 实时阶段传输
+
+V6 在同一个 `POST /research` 增加 `Accept: application/x-ndjson` 协商。不带该请求头的同步调用仍返回原 JSON；新版 Worker 接收逐行进度，旧 JSON 上游也仍兼容，但没有实时阶段帧。
+
+NDJSON 一行是一个完整 JSON，类型为 `progress`、`heartbeat`、`result` 或 `error`。例如：
+
+```json
+{"type":"progress","data":{"stage":"search","completed":1,"total":3}}
+```
+
+`result.data` 使用原研究响应结构；`error` 带 `status` 和原 `detail`。开始流后 HTTP 已是 200，所以执行失败通过终止帧表达；200 本身不能证明研究成功。每 5 秒空闲心跳；队列最多 16 帧，慢读取会产生背压；调用方断开时取消并回收 producer。
+
+`research/progress.py` 用 ContextVar 隔离并发请求的回调。Planner、Writer 和 Chat 在实际开始/完成时发出 0/1 进度；Searcher 在每项搜索成功、空结果或失败结束后递增计数，取消中的搜索不算完成。并发搜索使用锁保证计数与入队顺序一致。只有 Go Worker 保存报告后才产生面向网页的 `succeeded` 事件；Python 的 Writer 完成不等于最终入库。
+
+`tests/test_streaming.py` 覆盖阶段顺序、部分搜索失败、并发上下文隔离、终止错误、背压，以及 ASGI 2.3/2.4 断连后的协程清理。这些测试模拟上游，不验证真实模型质量。

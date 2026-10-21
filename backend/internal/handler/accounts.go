@@ -56,6 +56,7 @@ func (a *Accounts) Auth(required bool) gin.HandlerFunc {
 			return
 		}
 		c.Set(userKey, claims.Subject)
+		c.Set(authExpiryKey, claims.ExpiresAt.Time)
 		c.Next()
 	}
 }

@@ -1932,3 +1932,12 @@ dialog h2 {
     scroll-behavior: auto!important;
   }
 }
+.task-progress { list-style: none; padding: 0; margin: 24px auto 12px; display: flex; gap: 12px; width: 100%; max-width: 620px; text-align: left; }
+.task-progress[hidden] { display: none; }
+.progress-step { flex: 1; border: 1px solid #deded6; border-radius: 12px; padding: 14px; background: #fafaf6; min-width: 0; }
+.progress-step strong, .progress-step span { display: block; }
+.progress-step strong { font-size: 13px; margin-bottom: 6px; }
+.progress-step span { font-size: 12px; color: #667063; }
+.progress-step.active { border-color: #798f67; background: #f1f5e9; }
+.progress-step.done { border-color: #b5c6a6; }
+@media (max-width: 540px) { .task-progress { flex-direction: column; gap: 8px; } .progress-step { display: flex; justify-content: space-between; gap: 8px; } .progress-step strong { margin: 0; } }

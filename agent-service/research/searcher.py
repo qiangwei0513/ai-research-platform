@@ -8,6 +8,7 @@ from research.schemas import (
     SearchTaskResult,
 )
 from research.search_agent import run_search_task
+from research.progress import emit_progress
 
 
 async def execute_search_plan(
@@ -22,8 +23,12 @@ async def execute_search_plan(
 
     # 控制这一次研究中同时执行的搜索数量。
     semaphore = asyncio.Semaphore(concurrency)
+    completed = 0
+    progress_lock = asyncio.Lock()
+    await emit_progress("search", 0, len(plan.searches))
 
     async def search_one(item: SearchItem):
+        nonlocal completed
         async with semaphore:
             print(f"[searcher] 开始搜索：{item.query}", flush=True)
 
@@ -35,8 +40,6 @@ async def execute_search_plan(
                     f"状态={task.status}",
                     flush=True,
                 )
-
-                return task, sources
 
             except Exception as exc:
                 # 一个搜索失败，保留错误，让其他搜索继续。
@@ -52,7 +55,13 @@ async def execute_search_plan(
                     error=str(exc),
                 )
 
-                return task, []
+                sources = []
+            # Count finished sub-tasks, including failed/empty searches. Serialise
+            # emission too: queue backpressure must not reorder 1/3 and 2/3.
+            async with progress_lock:
+                completed += 1
+                await emit_progress("search", completed, len(plan.searches))
+            return task, sources
 
     # 同时调度任务，并等待它们全部结束。
     outcomes = await asyncio.gather(

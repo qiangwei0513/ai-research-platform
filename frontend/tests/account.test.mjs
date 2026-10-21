@@ -6,7 +6,7 @@ import { JSDOM } from "jsdom";
 
 const root = new URL("../", import.meta.url);
 const html = await readFile(new URL("index.html", root), "utf8");
-const scripts = await Promise.all(["vendor/marked.umd.js", "vendor/purify.min.js", "account.js", "app.js"].map((name) => readFile(new URL(`assets/${name}`, root), "utf8")));
+const scripts = await Promise.all(["vendor/marked.umd.js", "vendor/purify.min.js", "events.js", "account.js", "app.js"].map((name) => readFile(new URL(`assets/${name}`, root), "utf8")));
 const key = "zhixu.session.v1";
 const user = { id: "a".repeat(32), email: "reader@example.test" };
 const session = () => ({ accessToken: "test-token", expiresAt: Date.now() + 60000, user });
@@ -22,11 +22,12 @@ async function until(condition) {
   assert.ok(condition(), "UI condition did not become true");
 }
 
-function page(t, handler, stored, fastPolling = false) {
+function page(t, handler, stored, fastPolling = false, activeTask = null) {
   const dom = new JSDOM(html, { url: "http://localhost/", runScripts: "outside-only", pretendToBeVisual: true });
   const w = dom.window;
   t.after(() => w.close());
   w.TextEncoder = TextEncoder;
+  w.TextDecoder = TextDecoder;
   w.matchMedia = () => ({ matches: false });
   w.HTMLElement.prototype.scrollIntoView = function () {};
   w.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
@@ -36,9 +37,11 @@ function page(t, handler, stored, fastPolling = false) {
     w.setTimeout = (callback, delay, ...args) => setTimer(callback, delay === 5000 ? 20 : delay, ...args);
   }
   if (stored) w.sessionStorage.setItem(key, JSON.stringify(stored));
+  if (activeTask) w.sessionStorage.setItem("zhixu.activeTask.v1", JSON.stringify(activeTask));
   const requests = [];
   w.fetch = async (url, options = {}) => {
     if (url === "/ping") return ok({ message: "pong" });
+    if (url === "/health" && !fastPolling) return ok({ async_tasks: false });
     const request = { url, ...options, data: options.body ? JSON.parse(options.body) : null };
     requests.push(request);
     return handler(request);
@@ -48,6 +51,78 @@ function page(t, handler, stored, fastPolling = false) {
   const submit = (id) => $(id).dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true }));
   return { w, $, submit, requests };
 }
+
+function eventChannel() {
+  let writer;
+  const body = new ReadableStream({ start(c) { writer = c; } });
+  return {
+    response: new Response(body, { headers: { "Content-Type": "text/event-stream" } }),
+    send: (id, type, data) => writer.enqueue(new TextEncoder().encode(`id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`)),
+  };
+}
+
+test("SSE 实时搜索计数、请求头认证与终态报告读取", async (t) => {
+  const channel = eventChannel();
+  let finished = false;
+  const p = page(t, ({ url, headers }) => {
+    if (url === "/health") return ok({ async_tasks: true, task_events: true });
+    if (url === "/api/tasks") return ok({ task_id: task.id }, 202);
+    if (url.endsWith("/events")) { assert.equal(headers.Authorization, "Bearer test-token"); assert.ok(!url.includes("test-token")); return channel.response; }
+    if (url.endsWith("/report")) return ok(report);
+    return ok({ ...task, async: true, status: finished ? "succeeded" : "running" });
+  }, session(), true);
+  p.$("query").value = "测试实时进度";
+  p.submit("research-form");
+  await until(() => p.requests.some((r) => r.url.endsWith("/events")));
+  channel.send(2, "snapshot", { last_event_id: 2, task: { ...task, status: "running", async: true, attempt: 1, max_attempts: 3 } });
+  channel.send(3, "search_progress", { status: "running", attempt: 1, progress: { stage: "search", completed: 1, total: 3 } });
+  await until(() => p.$("task-progress").textContent.includes("1 / 3"));
+  assert.equal(p.$("success-state").hidden, true);
+  finished = true;
+  channel.send(4, "succeeded", { status: "succeeded", attempt: 1 });
+  await until(() => !p.$("success-state").hidden);
+  assert.equal(p.requests.filter((r) => r.url === "/api/tasks").length, 1);
+  assert.equal(p.w.sessionStorage.getItem("zhixu.activeTask.v1"), null);
+});
+
+test("刷新恢复原任务并订阅进度，退出取消订阅和本地恢复记录", async (t) => {
+  const channel = eventChannel();
+  const running = { ...task, status: "running", async: true, attempt: 1 };
+  const p = page(t, ({ url }) => {
+    if (url === "/health") return ok({ task_events: true });
+    if (url.endsWith("/events")) return channel.response;
+    return ok(running);
+  }, session(), true, { id: task.id, ownerId: user.id });
+  await until(() => p.requests.some((r) => r.url.endsWith("/events")));
+  channel.send(8, "snapshot", { last_event_id: 8, task: running, progress: { stage: "writer", completed: 0, total: 1 } });
+  await until(() => p.$("task-progress").textContent.includes("进行中"));
+  assert.equal(p.$("query").value, task.query);
+  assert.equal(p.requests.filter((r) => r.method === "POST").length, 0);
+  p.$("account-button").click(); p.$("logout-button").click();
+  assert.equal(p.w.sessionStorage.getItem("zhixu.activeTask.v1"), null);
+  assert.equal(p.$("empty-state").hidden, false);
+  assert.equal(p.requests.find((r) => r.url.endsWith("/events")).signal.aborted, true);
+});
+
+test("历史详情订阅阶段事件，关闭详情停止连接", async (t) => {
+  const channel = eventChannel();
+  const running = { ...task, async: true, status: "running" };
+  const p = page(t, ({ url }) => {
+    if (url === "/health") return ok({ task_events: true });
+    if (url.includes("?page=")) return ok({ items: [running], total: 1 });
+    if (url.endsWith("/runs") || url.endsWith("/attempts")) return ok({ items: [] });
+    if (url.endsWith("/events")) return channel.response;
+    return ok(running);
+  }, session(), true);
+  p.$("history-button").click();
+  await until(() => p.$("history-list").children.length === 1);
+  p.$("history-list").firstElementChild.click();
+  await until(() => p.requests.some((r) => r.url.endsWith("/events")));
+  channel.send(4, "snapshot", { last_event_id: 4, task: running, progress: { stage: "search", completed: 2, total: 3 } });
+  await until(() => p.$("history-detail").textContent.includes("2 / 3"));
+  p.$("close-history").click();
+  assert.equal(p.requests.find((r) => r.url.endsWith("/events")).signal.aborted, true);
+});
 
 test("注册校验密码、自动登录，并且只保存令牌而不保存密码", async (t) => {
   const p = page(t, ({ url }) => url.endsWith("register") ? ok({ user }, 201) : ok({ user, access_token: "test-token", expires_in: 86400 }));
@@ -208,4 +283,108 @@ test("进行中任务自动更新，终态和关闭历史窗口都会停止轮�
   p.$("close-history").click();
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(count, 1);
+});
+
+test("登录后异步提交、释放表单并轮询到报告，不占用同步接口", async (t) => {
+  let reads = 0;
+  const p = page(t, ({ url, method }) => {
+    if (url === "/health") return ok({ async_tasks: true });
+    if (url === "/api/tasks" && method === "POST") return ok({ task_id: task.id, status: "queued" }, 202);
+    if (url.endsWith("/report")) return ok(report);
+    if (url === `/api/tasks/${task.id}`) return ok({ ...task, async: true, status: ++reads < 3 ? "running" : "succeeded", attempt: 1, max_attempts: 3 });
+    throw new Error(`unexpected ${url}`);
+  }, session(), true);
+  p.$("query").value = "异步研究";
+  p.submit("research-form");
+  await until(() => !p.$("async-actions").hidden);
+  assert.equal(p.$("submit-button").disabled, false);
+  assert.match(p.$("waiting-note").textContent, /后台|离开页面/);
+  await until(() => !p.$("success-state").hidden);
+  const create = p.requests.find((r) => r.method === "POST");
+  assert.ok(create.headers["Idempotency-Key"].length >= 16);
+  assert.equal(create.headers.Authorization, "Bearer test-token");
+  assert.equal(p.requests.some((r) => r.url === "/api/research"), false);
+  assert.match(p.$("result-saved").textContent, /已保存/);
+});
+
+test("异步提交响应丢失后，原问题重试复用幂等键", async (t) => {
+  let attempts = 0;
+  const keys = [];
+  const p = page(t, ({ url, headers, method }) => {
+    if (url === "/health") return ok({ async_tasks: true });
+    if (url === "/api/tasks" && method === "POST") {
+      keys.push(headers["Idempotency-Key"]);
+      if (++attempts === 1) throw new Error("network lost after acceptance");
+      return ok({ task_id: task.id }, 202);
+    }
+    return ok({ ...task, async: true, status: "queued" });
+  }, session(), true);
+  p.$("query").value = "原问题";
+  p.submit("research-form");
+  await until(() => !p.$("error-state").hidden);
+  p.submit("research-form");
+  await until(() => !p.$("async-actions").hidden);
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], keys[1]);
+  assert.equal(p.requests.some((r) => r.url === "/api/research"), false);
+});
+
+test("执行中可以取消，取消后停止轮询且不请求报告", async (t) => {
+  let cancelled = false;
+  const p = page(t, ({ url, method }) => {
+    if (url === "/health") return ok({ async_tasks: true });
+    if (url === "/api/tasks" && method === "POST") return ok({ task_id: task.id }, 202);
+    if (url.endsWith("/cancel")) { cancelled = true; return ok({ ...task, status: "cancelled" }); }
+    return ok({ ...task, async: true, status: cancelled ? "cancelled" : "running", error_message: cancelled ? "用户取消任务" : "" });
+  }, session(), true);
+  p.$("query").value = "取消测试";
+  p.submit("research-form");
+  await until(() => !p.$("async-actions").hidden);
+  p.$("cancel-current-task").click();
+  await until(() => !p.$("error-state").hidden);
+  assert.match(p.$("error-message").textContent, /取消/);
+  assert.equal(p.$("async-actions").hidden, true);
+  const count = p.requests.length;
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  assert.equal(p.requests.length, count);
+  assert.equal(p.requests.some((r) => r.url.endsWith("/report")), false);
+});
+
+test("异步任务轮询期间退出，迟到的报告不会重新显示", async (t) => {
+  let release;
+  const p = page(t, ({ url, method }) => {
+    if (url === "/health") return ok({ async_tasks: true });
+    if (url === "/api/tasks" && method === "POST") return ok({ task_id: task.id }, 202);
+    if (url.endsWith("/report")) return new Promise((resolve) => { release = resolve; });
+    return ok({ ...task, async: true });
+  }, session(), true);
+  p.$("query").value = "私有结果";
+  p.submit("research-form");
+  await until(() => Boolean(release));
+  p.$("account-button").click();
+  p.$("logout-button").click();
+  release(ok(report));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(p.$("success-state").hidden, true);
+  assert.equal(p.$("panel-report").textContent, "");
+});
+
+test("历史显示异步尝试记录，并允许取消排队任务", async (t) => {
+  let cancelled = false;
+  const current = () => ({ ...task, async: true, status: cancelled ? "cancelled" : "queued", attempt: 1, max_attempts: 3 });
+  const p = page(t, ({ url }) => {
+    if (url.endsWith("/cancel")) { cancelled = true; return ok(current()); }
+    if (url.startsWith("/api/tasks?")) return ok({ items: [current()], total: 1 });
+    if (url.endsWith("/attempts")) return ok({ items: [{ attempt: 1, status: "failed", error_code: "worker_lost", error_message: "执行进程中断" }] });
+    if (url.endsWith("/runs")) return ok({ items: [] });
+    return ok(current());
+  }, session(), true);
+  p.$("history-button").click();
+  await until(() => p.$("history-list").children.length === 1);
+  p.$("history-list").firstChild.click();
+  await until(() => !p.$("cancel-task").hidden);
+  assert.match(p.$("history-detail").textContent, /执行进程中断/);
+  p.$("cancel-task").click();
+  await until(() => cancelled && p.$("cancel-task").hidden);
+  assert.match(p.$("history-detail").textContent, /取消/);
 });

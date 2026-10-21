@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/handler"
+	"github.com/qiangwei0513/ai-research-platform/backend/internal/queue"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/repository"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/service"
 )
@@ -21,6 +22,11 @@ var taskService *service.TaskService
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	stream, err := queue.New(os.Getenv("QUEUE_REDIS_URL"), envOrDefault("QUEUE_PREFIX", "arp"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer stream.Close()
 	r := gin.Default()
 	// 不使用任意客户端传入的 X-Forwarded-For 作为可信身份。
 	if err := r.SetTrustedProxies(nil); err != nil {
@@ -47,7 +53,7 @@ func main() {
 	}
 	if dsn := os.Getenv("MYSQL_DSN"); dsn != "" {
 		startup, cancel := context.WithTimeout(ctx, 30*time.Second)
-		store, err := repository.Open(startup, dsn)
+		store, err := repository.OpenWithRetry(startup, dsn)
 		if err != nil {
 			cancel()
 			log.Fatal(err)
@@ -63,7 +69,7 @@ func main() {
 			log.Fatal(err)
 		}
 		defer cache.Close()
-		taskService = &service.TaskService{Store: store, Cache: cache}
+		taskService = &service.TaskService{Store: store, Cache: cache, AsyncEnabled: stream != nil, MaxActiveTasks: envInteger("MAX_ACTIVE_TASKS_PER_USER", 3, 1)}
 		accounts, err := handler.NewAccounts(taskService, os.Getenv("JWT_SECRET"))
 		if err != nil {
 			log.Fatal(err)
@@ -73,6 +79,11 @@ func main() {
 		r.POST("/api/auth/register", authLimits.middleware(), accounts.Register)
 		r.POST("/api/auth/login", authLimits.middleware(), accounts.Login)
 		tasks := r.Group("/api/tasks", accounts.Auth(true))
+		events := handler.NewEventStream(store)
+		tasks.GET("/:id/events", events.Serve)
+		tasks.POST("", limits.middleware(), accounts.CreateTask)
+		tasks.POST("/:id/cancel", accounts.CancelTask)
+		tasks.GET("/:id/attempts", accounts.GetAttempts)
 		tasks.GET("", accounts.ListTasks)
 		tasks.GET("/:id", accounts.GetTask)
 		tasks.GET("/:id/runs", accounts.GetRuns)
@@ -96,7 +107,7 @@ func main() {
 	r.POST("/api/research", optionalAuth, limits.middleware(), handleResearch)
 	r.GET("/health", func(c *gin.Context) {
 		if taskService == nil {
-			c.JSON(200, gin.H{"status": "ok", "mysql": "disabled", "redis": "disabled"})
+			c.JSON(200, gin.H{"status": "ok", "mysql": "disabled", "redis": "disabled", "queue": "disabled", "async_tasks": false, "task_events": false})
 			return
 		}
 		check, cancel := context.WithTimeout(c.Request.Context(), time.Second)
@@ -105,7 +116,7 @@ func main() {
 			c.JSON(503, gin.H{"status": "unavailable", "mysql": "unavailable"})
 			return
 		}
-		c.JSON(200, gin.H{"status": "ok", "mysql": "ok", "redis": taskService.Cache.Health(check)})
+		c.JSON(200, gin.H{"status": "ok", "mysql": "ok", "redis": taskService.Cache.Health(check), "queue": stream.Health(check), "async_tasks": taskService.AsyncEnabled, "task_events": true})
 	})
 
 	frontend, err := os.OpenRoot(envOrDefault("FRONTEND_DIR", "../frontend"))

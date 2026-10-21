@@ -23,6 +23,8 @@
 **/.DS_Store
 backend/backend
 backend/backend.exe
+backend/worker
+backend/worker.exe
 backend/bin/
 **/*.test
 dist/

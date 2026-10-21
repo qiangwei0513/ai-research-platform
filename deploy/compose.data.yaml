@@ -1,4 +1,10 @@
-# 与根 compose.yaml 合并，启用 V3/V4；不向宿主机公开 MySQL/Redis。
+# 与根 compose.yaml 合并，启用完整系统；不向宿主机公开 MySQL/Redis。
+x-data-logging: &data-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   backend:
     environment:
@@ -6,6 +12,9 @@ services:
       JWT_SECRET: "${JWT_SECRET:?set JWT_SECRET}"
       REDIS_URL: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0"
       CACHE_PREFIX: "arp"
+      QUEUE_REDIS_URL: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis-queue:6379/0"
+      QUEUE_PREFIX: "arp"
+      MAX_ACTIVE_TASKS_PER_USER: "${MAX_ACTIVE_TASKS_PER_USER:-3}"
     depends_on:
       mysql:
         condition: service_healthy
@@ -21,6 +30,7 @@ services:
         condition: service_started
   mysql:
     image: mysql:8.4
+    platform: "${APP_PLATFORM:-linux/amd64}"
     environment:
       MYSQL_DATABASE: research
       MYSQL_USER: research
@@ -29,6 +39,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     restart: unless-stopped
+    logging: *data-logging
     healthcheck:
       test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h 127.0.0.1 -u research -D research -e 'SELECT 1' >/dev/null"]
       interval: 5s
@@ -37,15 +48,67 @@ services:
       start_period: 30s
   redis:
     image: redis:7.4-alpine
+    platform: "${APP_PLATFORM:-linux/amd64}"
     environment:
       REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD}"
     command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --maxmemory 128mb --maxmemory-policy allkeys-lru --save '' --appendonly no"]
     restart: unless-stopped
+    logging: *data-logging
     healthcheck:
       test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 3
 
+  worker:
+    image: "${BACKEND_IMAGE:-ai-research-platform-backend:latest}"
+    platform: "${APP_PLATFORM:-linux/amd64}"
+    command: ["./worker"]
+    environment:
+      MYSQL_DSN: "research:${MYSQL_PASSWORD:?set MYSQL_PASSWORD}@tcp(mysql:3306)/research?charset=utf8mb4"
+      REDIS_URL: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0"
+      CACHE_PREFIX: "arp"
+      QUEUE_REDIS_URL: "redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis-queue:6379/0"
+      QUEUE_PREFIX: "arp"
+      AGENT_SERVICE_URL: "http://agent-service:8000/research"
+      WORKER_CONCURRENCY: "${WORKER_CONCURRENCY:-2}"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      agent-service:
+        condition: service_healthy
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "./worker", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+  redis-queue:
+    image: redis:7.4-alpine
+    platform: "${APP_PLATFORM:-linux/amd64}"
+    environment:
+      REDIS_PASSWORD: "${REDIS_PASSWORD:?set REDIS_PASSWORD}"
+    command: ["sh", "-c", 'exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory 128mb --maxmemory-policy noeviction --save "" --appendonly yes --appendfsync everysec']
+    volumes:
+      - queue_data:/data
+    restart: unless-stopped
+    logging: *data-logging
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
 volumes:
   mysql_data:
+  queue_data:

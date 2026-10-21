@@ -1,0 +1,6 @@
+# Used only by deploy/smoke.py, with generated credentials and a unique project.
+services:
+  agent-service:
+    volumes:
+      - "${SMOKE_FIXTURE_DIR:?set SMOKE_FIXTURE_DIR}:/fixtures:ro"
+    command: ["python", "-m", "uvicorn", "mock_agent:app", "--app-dir", "/fixtures", "--host", "0.0.0.0", "--port", "8000"]

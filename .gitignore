@@ -33,6 +33,8 @@ build/
 dist/
 /backend/backend
 /backend/backend.exe
+/backend/worker
+/backend/worker.exe
 /backend/bin/
 /backend/*.test
 

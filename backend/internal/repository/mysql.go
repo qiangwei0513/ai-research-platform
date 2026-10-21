@@ -34,6 +34,19 @@ func randomBytes() []byte {
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
+	return open(ctx, dsn, false)
+}
+
+// OpenWithRetry is for process startup. Health probes use Open to fail promptly.
+// The caller must provide a deadline so a missing database cannot hang startup.
+func OpenWithRetry(ctx context.Context, dsn string) (*Store, error) {
+	if _, bounded := ctx.Deadline(); !bounded {
+		return nil, errors.New("MySQL 启动重试需要 context 截止时间")
+	}
+	return open(ctx, dsn, true)
+}
+
+func open(ctx context.Context, dsn string, retry bool) (*Store, error) {
 	cfg, err := mysql.ParseDSN(dsn)
 	if err != nil {
 		return nil, errors.New("MYSQL_DSN 格式无效")
@@ -48,9 +61,18 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(3 * time.Minute)
-	if err := db.PingContext(ctx); err != nil {
+	if retry {
+		err = pingWithRetry(ctx, db.PingContext, 250*time.Millisecond)
+	} else {
+		err = db.PingContext(ctx)
+	}
+	if err != nil {
 		db.Close()
-		return nil, errors.New("MySQL 连接检查失败")
+		// Driver errors can contain addresses/usernames. Never return the DSN.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("MySQL 连接等待结束: %w", ctx.Err())
+		}
+		return nil, errors.New("MySQL 连接检查失败，请检查地址、数据库及账号配置")
 	}
 	return &Store{DB: db}, nil
 }
@@ -156,7 +178,7 @@ func (s *Store) CreateTask(ctx context.Context, userID, query, mode string) (mod
 }
 
 func (s *Store) Task(ctx context.Context, userID, id string) (model.Task, error) {
-	return scanTask(s.DB.QueryRowContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE user_id=? AND id=?", userID, id))
+	return scanTaskView(s.DB.QueryRowContext(ctx, "SELECT "+taskViewColumns+" FROM tasks t LEFT JOIN task_jobs j ON j.task_id=t.id WHERE t.user_id=? AND t.id=?", userID, id))
 }
 
 func (s *Store) Tasks(ctx context.Context, userID string, page, size int) ([]model.Task, int, error) {
@@ -164,14 +186,14 @@ func (s *Store) Tasks(ctx context.Context, userID string, page, size int) ([]mod
 	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE user_id=?", userID).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := s.DB.QueryContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE user_id=? ORDER BY started_at DESC,id DESC LIMIT ? OFFSET ?", userID, size, (page-1)*size)
+	rows, err := s.DB.QueryContext(ctx, "SELECT "+taskViewColumns+" FROM tasks t LEFT JOIN task_jobs j ON j.task_id=t.id WHERE t.user_id=? ORDER BY t.started_at DESC,t.id DESC LIMIT ? OFFSET ?", userID, size, (page-1)*size)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer rows.Close()
 	items := make([]model.Task, 0)
 	for rows.Next() {
-		t, err := scanTask(rows)
+		t, err := scanTaskView(rows)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -194,6 +216,18 @@ func (s *Store) Finish(ctx context.Context, userID, id string, report *model.Rep
 	if t.Status != "running" {
 		return t, ErrConflict
 	}
+	t, err = saveTaskResult(ctx, tx, t, report, runs, code, message)
+	if err != nil {
+		return t, err
+	}
+	if err = appendEventLocked(ctx, tx, t, nil); err != nil {
+		return t, err
+	}
+	return t, tx.Commit()
+}
+
+func saveTaskResult(ctx context.Context, tx *sql.Tx, t model.Task, report *model.Report, runs []model.AgentRun, code, message string) (model.Task, error) {
+	var err error
 	now := time.Now().UTC()
 	t.FinishedAt = &now
 	t.Version++
@@ -214,7 +248,7 @@ func (s *Store) Finish(ctx context.Context, userID, id string, report *model.Rep
 		if len(report.Search) > 0 {
 			search = string(report.Search)
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO reports (task_id,result,plan,search) VALUES (?,?,?,?)", id, report.Result, plan, search)
+		_, err = tx.ExecContext(ctx, "INSERT INTO reports (task_id,result,plan,search) VALUES (?,?,?,?)", t.ID, report.Result, plan, search)
 		if err != nil {
 			return t, err
 		}
@@ -223,16 +257,16 @@ func (s *Store) Finish(ctx context.Context, userID, id string, report *model.Rep
 		runs = []model.AgentRun{{Stage: t.Mode, Status: t.Status, StartedAt: t.StartedAt, FinishedAt: now, ErrorCode: t.ErrorCode}}
 	}
 	for i, run := range runs {
-		_, err = tx.ExecContext(ctx, "INSERT INTO agent_runs (task_id,sequence_no,stage,status,started_at,finished_at,error_code) VALUES (?,?,?,?,?,?,?)", id, i, run.Stage, run.Status, run.StartedAt, run.FinishedAt, run.ErrorCode)
+		_, err = tx.ExecContext(ctx, "INSERT INTO agent_runs (task_id,sequence_no,stage,status,started_at,finished_at,error_code) VALUES (?,?,?,?,?,?,?)", t.ID, i, run.Stage, run.Status, run.StartedAt, run.FinishedAt, run.ErrorCode)
 		if err != nil {
 			return t, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, "UPDATE tasks SET status=?,finished_at=?,error_code=?,error_message=?,version=? WHERE id=?", t.Status, now, t.ErrorCode, t.ErrorMessage, t.Version, id)
+	_, err = tx.ExecContext(ctx, "UPDATE tasks SET status=?,finished_at=?,error_code=?,error_message=?,version=? WHERE id=?", t.Status, now, t.ErrorCode, t.ErrorMessage, t.Version, t.ID)
 	if err != nil {
 		return t, err
 	}
-	return t, tx.Commit()
+	return t, nil
 }
 
 func (s *Store) Runs(ctx context.Context, userID, id string) ([]model.AgentRun, error) {
@@ -262,7 +296,7 @@ func (s *Store) Report(ctx context.Context, userID, id string) (model.Report, er
 }
 
 func (s *Store) Expired(ctx context.Context) ([]model.Task, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE status='running' AND deadline_at<? LIMIT 100", time.Now().UTC())
+	rows, err := s.DB.QueryContext(ctx, "SELECT "+taskColumns+" FROM tasks WHERE status='running' AND deadline_at<? AND NOT EXISTS (SELECT 1 FROM task_jobs j WHERE j.task_id=tasks.id) LIMIT 100", time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}

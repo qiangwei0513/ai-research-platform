@@ -102,7 +102,7 @@ async def test_disconnect_cancels_agent_and_cleans_up_context(monkeypatch):
     monkeypatch.setattr(main, "run_research", answer)
     call = asyncio.create_task(main.research(
         main.ResearchRequest(query="disconnect", fresh=True),
-        Request({"type": "http"}, receive),
+        Request({"type": "http", "headers": []}, receive),
     ))
     await asyncio.wait_for(entered.wait(), 1)
     disconnect.set()

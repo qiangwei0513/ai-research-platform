@@ -22,3 +22,11 @@ services:
     ports:
       - "127.0.0.1:26379:6379"
     command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  redis-queue:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:26380:6379"
+    command: ["redis-server", "--maxmemory-policy", "noeviction", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec"]
+    tmpfs:
+      - /data

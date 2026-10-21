@@ -8,11 +8,13 @@ x-logging: &default-logging
 
 services:
   agent-service:
+    image: "${AGENT_IMAGE:-ai-research-platform-agent-service:latest}"
+    platform: "${APP_PLATFORM:-linux/amd64}"
     build:
       context: .
       dockerfile: deploy/agent-service.Dockerfile
     env_file:
-      - ./agent-service/.env
+      - "${AGENT_ENV_FILE:-./agent-service/.env}"
     restart: unless-stopped
     init: true
     logging: *default-logging
@@ -24,6 +26,8 @@ services:
       start_period: 20s
 
   backend:
+    image: "${BACKEND_IMAGE:-ai-research-platform-backend:latest}"
+    platform: "${APP_PLATFORM:-linux/amd64}"
     build:
       context: .
       dockerfile: deploy/backend.Dockerfile
@@ -39,9 +43,10 @@ services:
         condition: service_healthy
     restart: unless-stopped
     init: true
+    stop_grace_period: 20s
     logging: *default-logging
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ping"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -49,6 +54,7 @@ services:
 
   caddy:
     image: caddy:2-alpine
+    platform: "${APP_PLATFORM:-linux/amd64}"
     environment:
       SITE_ADDRESS: "${SITE_ADDRESS:-http://localhost}"
     ports:

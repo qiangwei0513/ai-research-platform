@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/assets/styles.css">
   <script defer src="/assets/vendor/marked.umd.js"></script>
   <script defer src="/assets/vendor/purify.min.js"></script>
+  <script defer src="/assets/events.js"></script>
   <script defer src="/assets/account.js"></script>
   <script defer src="/assets/app.js"></script>
 </head>
@@ -99,8 +100,11 @@
             <p class="empty-eyebrow">CURIOSITY TAKES A MOMENT</p>
             <h3 id="waiting-title">正在研究你的问题</h3>
             <p id="waiting-description">报告、计划和参考来源将在完成后一起呈现。</p>
+            <ol class="task-progress" id="task-progress" aria-label="任务执行阶段" hidden></ol>
+            <p class="field-hint" id="event-connection" role="status"></p>
             <div class="elapsed-badge">已等待 <span id="elapsed">00:00</span></div>
-            <p class="waiting-note" id="waiting-note">深入研究最多等待约 5 分钟，请保持页面打开。</p>
+            <p class="waiting-note" id="waiting-note">正在提交问题…</p>
+            <div class="history-detail-actions" id="async-actions" hidden><button class="secondary-button" id="cancel-current-task" type="button">取消任务</button><button class="text-button" id="waiting-history" type="button">查看我的历史</button></div>
           </div>
 
           <div class="error-state" id="error-state" hidden>
@@ -136,7 +140,7 @@
     <div class="dialog-header"><p class="eyebrow">GETTING STARTED</p><button class="icon-button" id="close-help" type="button" aria-label="关闭使用说明"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#close"></use></svg></button></div>
     <h2 id="help-title">从一个具体的问题开始</h2>
     <ol class="help-steps"><li><strong>登录，让探索有迹可循</strong><p>右上角注册或登录后，新提交的问题和结果会保存在「我的历史」。也可以匿名体验，离开前记得下载结果。</p></li><li><strong>选择一种探索方式</strong><p>「深入研究」会先规划，再搜索并撰写报告；「快速问答」直接回答，必要时调用搜索工具。勾选「重新搜索最新资料」可跳过近期搜索缓存。</p></li><li><strong>阅读答案，也检查来源</strong><p>研究完成后可以查看搜索计划、参考来源，复制或下载 Markdown 报告。历史任务中可以查看状态、阶段耗时和失败原因。</p></li></ol>
-    <div class="help-note">每次提问独立处理，不继承上一次对话。提交后请保持页面打开；刷新后可查询已保存的任务，但当前不支持后台续跑或取消。研究仅依据搜索返回的片段与摘要，未抓取网页全文。</div>
+    <div class="help-note">每次提问独立处理，不继承上一次对话。启用后台任务后，登录提交会立即保存并排队，离开页面后仍继续执行，也可在历史中取消。匿名体验仍需保持页面打开。研究仅依据搜索返回的片段与摘要，未抓取网页全文。</div>
   </dialog>
   <dialog id="account-dialog" aria-labelledby="account-title">
     <div class="dialog-header"><p class="eyebrow">YOUR RESEARCH SPACE</p><button class="icon-button" id="close-account" type="button" aria-label="关闭账号窗口"><svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#close"></use></svg></button></div>
@@ -179,9 +183,9 @@
     <div id="history-detail-view" hidden>
       <button class="text-button" id="history-back" type="button">← 返回列表</button>
       <div id="history-detail"></div>
-      <div class="history-detail-actions"><button class="primary-button" id="open-saved-report" type="button" hidden>打开报告<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg></button><button class="secondary-button" id="reuse-question" type="button">用此问题再研究</button></div>
+      <div class="history-detail-actions"><button class="primary-button" id="open-saved-report" type="button" hidden>打开报告<svg class="icon" aria-hidden="true"><use href="/assets/icons.svg#arrow"></use></svg></button><button class="secondary-button" id="cancel-task" type="button" hidden>取消任务</button><button class="secondary-button" id="reuse-question" type="button">用此问题再研究</button></div>
     </div>
-    <p class="history-footnote">进行中的任务每 5 秒更新状态。阶段记录在请求结束后保存。</p>
+    <p class="history-footnote">排队和进行中的任务每 5 秒更新状态。阶段记录在每次执行结束后保存。</p>
   </dialog>
   <noscript><div class="noscript-message">请启用 JavaScript，以使用研究助手。</div></noscript>
 </body>

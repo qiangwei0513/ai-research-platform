@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/handler"
@@ -18,11 +17,7 @@ import (
 )
 
 // 接收客户端提交的问题。
-type ResearchRequest struct {
-	Query string `json:"query"`
-	Mode  string `json:"mode"`
-	Fresh bool   `json:"fresh,omitempty"`
-}
+type ResearchRequest = handler.ResearchInput
 
 // 接收 Python 返回的答案，也作为 Go 的响应格式。
 type ResearchResponse struct {
@@ -45,44 +40,11 @@ var researchAgentClient = &http.Client{Timeout: 310 * time.Second}
 var agentServiceURL = envOrDefault("AGENT_SERVICE_URL", "http://127.0.0.1:8000/research")
 
 func handleResearch(c *gin.Context) {
-	// 1. 先限制整个请求体，再解析 JSON，避免超大输入占用内存。
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxRequestBytes)
-	requestBody, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "请求体不能超过 64 KiB", "code": "request_too_large"})
-		} else {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "读取请求内容失败"})
-		}
+	input, ok := handler.ReadResearch(c)
+	if !ok {
 		return
 	}
-	var input ResearchRequest
-	if err := json.Unmarshal(requestBody, &input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "请求格式错误，请提交包含字符串 query 的 JSON",
-		})
-		return
-	}
-
-	// 2. 校验问题：去掉首尾空白，限制为 1～5000 个字符。
-	input.Query = strings.TrimSpace(input.Query)
-	input.Mode = strings.TrimSpace(input.Mode)
-	if input.Mode == "" {
-		input.Mode = "chat"
-	}
-	if input.Mode != "chat" && input.Mode != "research" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "mode 必须是 chat 或 research"})
-		return
-	}
-	length := utf8.RuneCountInString(input.Query)
-
-	if length == 0 || length > 5000 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "query 必须是 1～5000 个字符的问题",
-		})
-		return
-	}
+	var err error
 
 	// 匿名请求维持原行为；登录请求必须先落库，再调用有成本的模型服务。
 	var task model.Task

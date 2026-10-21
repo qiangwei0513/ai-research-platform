@@ -12,12 +12,15 @@ ARG TARGETARCH
 # 并行限制仅作用于构建过程，不是内存硬上限，也不限制服务运行并发。
 RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
     CGO_ENABLED=0 GOMAXPROCS=1 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -p 1 -v -tags=nomsgpack -trimpath -ldflags="-s -w" -o /app/backend .
+    go build -p 1 -v -tags=nomsgpack -trimpath -ldflags="-s -w" -o /app/backend . && \
+    CGO_ENABLED=0 GOMAXPROCS=1 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -p 1 -v -trimpath -ldflags="-s -w" -o /app/worker ./cmd/worker
 
 FROM alpine:3.23
 RUN apk add --no-cache ca-certificates && addgroup -g 10001 app && adduser -D -u 10001 -G app app
 WORKDIR /app
 COPY --from=build /app/backend ./backend
+COPY --from=build /app/worker ./worker
 COPY frontend ./frontend
 USER app
 EXPOSE 8080
