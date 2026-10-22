@@ -7,6 +7,7 @@ from agents import Agent, ModelSettings, Runner
 
 from research.schemas import ReportDraft, SearchBundle, SearchPlan
 from research.timeouts import WRITER_TIMEOUT
+from research.telemetry import run_agent
 
 
 writer_agent = Agent(
@@ -216,7 +217,7 @@ async def write_report(
     )
 
     async with asyncio.timeout(WRITER_TIMEOUT):
-        result = await Runner.run(
+        result = await run_agent(
             writer_agent,
             prompt,
             max_turns=1,

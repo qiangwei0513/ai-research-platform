@@ -6,6 +6,7 @@ from agents import Agent, ModelSettings, Runner
 from research.schemas import SearchItem, SearchSource, SearchTaskResult
 from research.web_search import WebSearchContext, search_web
 from research.timeouts import SEARCH_AGENT_TIMEOUT
+from research.telemetry import run_agent, log_event
 
 search_agent = Agent(
     name="Research Searcher",
@@ -36,10 +37,10 @@ async def run_search_task(
         raise ValueError("搜索词和搜索目的不能为空")
 
     context = WebSearchContext()
-    print(f"[search_agent] 开始搜索并总结：{item.query}", flush=True)
+    log_event("search_agent_started")
     try:
         async with asyncio.timeout(SEARCH_AGENT_TIMEOUT):
-            result = await Runner.run(
+            result = await run_agent(
                 search_agent,
                 json.dumps(item.model_dump(), ensure_ascii=False),
                 context=context,

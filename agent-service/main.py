@@ -12,10 +12,12 @@ from research.cache import SearchCache, bypass_search_cache, needs_fresh_search
 from research.timeouts import CHAT_TIMEOUT
 from research.progress import emit_progress
 from research.streaming import ResearchStream, research_frames
+from research.telemetry import Measurement, RequestTelemetry, measurement
 from research.workflow import WorkflowError, WorkflowTimeout, run_research_workflow
 
 
 app = FastAPI(title="Research Agent Service")
+app.add_middleware(RequestTelemetry)
 logger = logging.getLogger(__name__)
 
 
@@ -30,6 +32,7 @@ class ResearchRequest(BaseModel):
 
 # 规定我们返回的 JSON 是什么格式
 class ResearchResponse(BaseModel):
+    usage: dict | None = None
     result: str
     mode: Literal["chat", "research"]
     plan: SearchPlan | None = None
@@ -45,6 +48,23 @@ async def health():
 
 # 接收问题，调用 Agent，返回答案
 async def execute_research(request: ResearchRequest):
+    token = None
+    if measurement.get() is None:
+        token = measurement.set(Measurement())
+    try:
+        result = await _execute_research(request)
+        result.usage = measurement.get().payload()
+        return result
+    except HTTPException as exc:
+        if isinstance(exc.detail, dict):
+            exc.detail["usage"] = measurement.get().payload()
+        raise
+    finally:
+        if token is not None:
+            measurement.reset(token)
+
+
+async def _execute_research(request: ResearchRequest):
     started = datetime.now(timezone.utc)
     cache_token = bypass_search_cache.set(request.fresh or needs_fresh_search(request.query))
     def chat_runs(status, code=""):

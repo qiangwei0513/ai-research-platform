@@ -9,6 +9,7 @@ from research.schemas import (
 )
 from research.search_agent import run_search_task
 from research.progress import emit_progress
+from research.telemetry import log_event
 
 
 async def execute_search_plan(
@@ -30,29 +31,22 @@ async def execute_search_plan(
     async def search_one(item: SearchItem):
         nonlocal completed
         async with semaphore:
-            print(f"[searcher] 开始搜索：{item.query}", flush=True)
+            log_event("search_started")
 
             try:
                 task, sources = await run_search_task(item)
 
-                print(
-                    f"[searcher] 搜索结束：{item.query}，"
-                    f"状态={task.status}",
-                    flush=True,
-                )
+                log_event("search_finished", status=task.status)
 
             except Exception as exc:
                 # 一个搜索失败，保留错误，让其他搜索继续。
-                print(
-                    f"[searcher] 搜索失败：{item.query}，原因={exc}",
-                    flush=True,
-                )
+                log_event("search_failed", error_type=type(exc).__name__)
 
                 task = SearchTaskResult(
                     query=item.query,
                     reason=item.reason,
                     status="failed",
-                    error=str(exc),
+                    error=f"搜索任务失败（{type(exc).__name__}）",
                 )
 
                 sources = []

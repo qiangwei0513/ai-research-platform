@@ -19,9 +19,3 @@ dependencies = [
 
 [tool.uv]
 package = false
-
-[dependency-groups]
-dev = [
-    "pytest>=8,<10",
-    "pytest-asyncio>=1,<2",
-]

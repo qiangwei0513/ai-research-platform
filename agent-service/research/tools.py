@@ -46,7 +46,7 @@ def search_notes(keyword: str) -> str:
     keyword = keyword.strip().casefold()
 
     # 开发阶段打印日志，确认工具是否真的执行。
-    print(f"[tool] search_notes 开始执行，关键词={keyword!r}", flush=True)
+    # Do not log user-supplied search terms.
 
     matches = []
 

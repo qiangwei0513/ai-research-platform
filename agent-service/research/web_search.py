@@ -1,6 +1,9 @@
 import asyncio
 import json
 import os
+from collections import deque
+from time import monotonic
+from weakref import WeakKeyDictionary
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -8,6 +11,55 @@ import httpx
 from agents import RunContextWrapper, function_tool
 
 from research.cache import SearchCache, bypass_search_cache, needs_fresh_search, normalize_query, search_cache_key
+from research.telemetry import increment, log_event, measurement, setting
+
+
+_limits = WeakKeyDictionary()
+
+
+def search_limits():
+    # A process normally has one loop; separate test/CLI loops need separate locks.
+    loop = asyncio.get_running_loop()
+    if loop not in _limits:
+        _limits[loop] = (asyncio.Semaphore(setting("SEARCH_MAX_CONCURRENCY", 4, 1, 16)), deque())
+    return _limits[loop]
+
+
+async def request_search(api_key, query, parameters):
+    semaphore, recent = search_limits()
+    async with asyncio.timeout(25):
+        async with semaphore:
+            async with httpx.AsyncClient(timeout=10) as client:
+                for attempt in range(2):
+                    now = monotonic()
+                    while recent and recent[0] <= now - 60:
+                        recent.popleft()
+                    state = measurement.get()
+                    if len(recent) >= setting("SEARCH_CALLS_PER_MINUTE", 120, 1, 1000):
+                        raise RuntimeError("搜索服务本分钟额度已用完")
+                    if state and state.search_calls >= setting("SEARCH_CALLS_PER_TASK", 6, 1, 12):
+                        raise RuntimeError("本次研究搜索额度已用完")
+                    # Count before awaiting: concurrent tools cannot overspend a budget.
+                    recent.append(now)
+                    increment("search_calls")
+                    try:
+                        async with client.stream("POST", "https://api.tavily.com/search",
+                                                 headers={"Authorization": f"Bearer {api_key}"},
+                                                 json={"query": query, **parameters}) as response:
+                            response.raise_for_status()
+                            body = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                body.extend(chunk)
+                                if len(body) > 262144:
+                                    raise RuntimeError("搜索响应超过大小限制")
+                            return json.loads(body)
+                    except httpx.HTTPStatusError as exc:
+                        if attempt or (exc.response.status_code != 429 and exc.response.status_code < 500):
+                            raise
+                    except (httpx.TimeoutException, httpx.RequestError):
+                        if attempt:
+                            raise
+                    await asyncio.sleep(0.25)
 
 
 @dataclass
@@ -37,44 +89,41 @@ async def fetch_web_results(query: str, *, fresh: bool = False) -> dict:
     bypass = fresh or bypass_search_cache.get() or needs_fresh_search(query)
     cached, cache_status = (None, "bypass") if bypass else await cache.get(key)
     if cached is not None:
-        print("[tool] search_web cache=hit，复用搜索片段", flush=True)
-        for item in cached["results"]:
-            print(f"[source] {item['url']}", flush=True)
+        increment("search_cache_hits")
+        log_event("search_cache", status="hit")
         return {"query": query, "count": len(cached["results"]), **cached, "cache_status": "hit"}
 
-    print(f"[tool] search_web 开始执行，搜索词={query!r}", flush=True)
+    increment("search_cache_misses")
+    log_event("search_started", cache_status=cache_status)
 
     try:
-        # 为整个搜索操作设置 25 秒期限。
-        async with asyncio.timeout(25):
-            async with httpx.AsyncClient(timeout=20) as client:
-                response = await client.post(
-                    "https://api.tavily.com/search",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                    },
-                    json={"query": query, **parameters},
-                )
-
-                response.raise_for_status()
-                data = response.json()
+        data = await request_search(api_key, query, parameters)
 
     except (TimeoutError, httpx.TimeoutException):
+        increment("search_errors")
         raise RuntimeError("联网搜索超时，请稍后重试") from None
     except httpx.HTTPStatusError as exc:
+        increment("search_errors")
         code = exc.response.status_code
         raise RuntimeError(f"搜索服务返回 HTTP {code}") from None
     except httpx.RequestError:
+        increment("search_errors")
         raise RuntimeError("无法连接搜索服务，请检查网络") from None
     except ValueError:
+        increment("search_errors")
         raise RuntimeError("搜索服务返回了无效 JSON") from None
+    except RuntimeError:
+        increment("search_errors")
+        raise
 
     results = []
 
     if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        increment("search_errors")
         raise RuntimeError("搜索服务返回了无效结果结构")
     for item in data["results"][:3]:
         if not isinstance(item, dict) or any(not isinstance(item.get(k), str) for k in ("title", "url", "content")):
+            increment("search_errors")
             raise RuntimeError("搜索服务返回了无效来源结构")
         results.append(
             {
@@ -84,18 +133,10 @@ async def fetch_web_results(query: str, *, fresh: bool = False) -> dict:
             }
         )
 
-    print(
-        f"[tool] search_web 执行完成，找到 {len(results)} 条结果",
-        flush=True,
-    )
-
-    for item in results:
-        print(f"[source] {item['url']}", flush=True)
-
     fetched_at = datetime.now(timezone.utc).isoformat()
     if not bypass:
         await cache.set(key, {"results": results, "fetched_at": fetched_at})
-    print(f"[cache] search status={cache_status}", flush=True)
+    log_event("search_finished", count=len(results), cache_status=cache_status)
     return {
         "query": query,
         "count": len(results),

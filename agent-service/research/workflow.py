@@ -9,6 +9,7 @@ from research.planner_agent import create_plan
 from research.schemas import AgentRun, SearchBundle, SearchPlan
 from research.cache import bypass_search_cache, needs_fresh_search
 from research.progress import emit_progress
+from research.telemetry import log_event
 from research.searcher import execute_search_plan
 from research.timeouts import (
     PLANNER_TIMEOUT,
@@ -54,11 +55,7 @@ async def run_research_workflow(query: str, *, fresh: bool = False) -> WorkflowR
     cache_token = bypass_search_cache.set(fresh or bypass_search_cache.get() or needs_fresh_search(query))
 
     def log(stage, status, started, detail=""):
-        print(
-            f"[workflow] run={run_id} stage={stage} status={status} "
-            f"elapsed={perf_counter() - started:.2f}s {detail}".rstrip(),
-            flush=True,
-        )
+        log_event("stage", stage=stage, status=status, duration_ms=round((perf_counter()-started)*1000), detail=detail)
 
     async def run_stage(name, timeout, action):
         nonlocal current_stage

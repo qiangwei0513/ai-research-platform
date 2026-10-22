@@ -2,6 +2,7 @@ from agents import Agent, Runner
 
 from research.tools import search_notes
 from research.web_search import search_web
+from research.telemetry import run_agent
 
 
 research_agent = Agent(
@@ -29,7 +30,7 @@ research_agent = Agent(
 
 
 async def run_research(query: str) -> str:
-    result = await Runner.run(
+    result = await run_agent(
         research_agent,
         query,
         max_turns=6,
