@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -34,6 +35,8 @@ func (a *Client) Execute(ctx context.Context, job repository.Job) repository.Com
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Task-ID", job.Task.ID)
+	req.Header.Set("X-Request-ID", job.RequestID)
+	req.Header.Set("X-Task-Attempt", strconv.Itoa(job.Attempt))
 	req.Header.Set("Accept", "application/x-ndjson")
 	client := a.HTTP
 	if client == nil {
@@ -66,8 +69,9 @@ func decodeReply(status int, raw []byte, job repository.Job) repository.Completi
 		result := repository.Completion{Code: "upstream_failed", Message: "研究服务执行失败", Retryable: status == 429 || status >= 500}
 		var failure struct {
 			Detail struct {
-				Code string           `json:"code"`
-				Runs []model.AgentRun `json:"runs"`
+				Usage *model.Usage     `json:"usage"`
+				Code  string           `json:"code"`
+				Runs  []model.AgentRun `json:"runs"`
 			} `json:"detail"`
 		}
 		if json.Unmarshal(raw, &failure) == nil {
@@ -80,21 +84,23 @@ func decodeReply(status int, raw []byte, job repository.Job) repository.Completi
 				result.Code = failure.Detail.Code
 			}
 			result.Runs = failure.Detail.Runs
+			result.Usage = failure.Detail.Usage
 		}
-		if !validRuns(result.Runs) {
+		if !validRuns(result.Runs) || !result.Usage.Valid() {
 			return repository.Completion{Code: "invalid_result", Message: "研究服务返回无效阶段记录"}
 		}
 		return result
 	}
 	var output struct {
 		model.Report
-		Runs []model.AgentRun `json:"runs"`
+		Usage *model.Usage     `json:"usage"`
+		Runs  []model.AgentRun `json:"runs"`
 	}
-	if json.Unmarshal(raw, &output) != nil || strings.TrimSpace(output.Result) == "" || (output.Mode != "" && output.Mode != job.Task.Mode) || !validRuns(output.Runs) {
+	if json.Unmarshal(raw, &output) != nil || strings.TrimSpace(output.Result) == "" || (output.Mode != "" && output.Mode != job.Task.Mode) || !validRuns(output.Runs) || !output.Usage.Valid() {
 		return repository.Completion{Code: "invalid_result", Message: "研究服务返回无效结果"}
 	}
 	output.Mode = job.Task.Mode
-	return repository.Completion{Report: &output.Report, Runs: output.Runs}
+	return repository.Completion{Report: &output.Report, Runs: output.Runs, Usage: output.Usage}
 }
 
 func (a *Client) readStream(ctx context.Context, body io.Reader, job repository.Job) repository.Completion {

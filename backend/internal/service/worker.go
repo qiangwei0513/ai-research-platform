@@ -7,14 +7,19 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/qiangwei0513/ai-research-platform/backend/internal/observe"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/queue"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/repository"
 	"github.com/redis/go-redis/v9"
 )
 
 type Worker struct {
+	ID                                                               string
+	OnHeartbeat                                                      func()
+	active                                                           atomic.Int64
 	Tasks                                                            *TaskService
 	Queue                                                            *queue.Streams
 	Execute                                                          func(context.Context, repository.Job) repository.Completion
@@ -61,6 +66,14 @@ func pause(ctx context.Context, d time.Duration) bool {
 }
 func (w *Worker) Run(ctx context.Context) {
 	w.defaults()
+	if w.ID == "" {
+		w.ID = repository.NewID()
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_, _ = w.Tasks.Store.DB.ExecContext(cleanup, "DELETE FROM worker_heartbeats WHERE id=?", w.ID)
+	}()
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -80,6 +93,13 @@ func (w *Worker) Run(ctx context.Context) {
 	wg.Wait()
 }
 func (w *Worker) maintain(ctx context.Context) {
+	defer func() {
+		check, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if w.Tasks.Store.WorkerHeartbeat(check, w.ID, w.Concurrency, int(w.active.Load())) == nil && w.OnHeartbeat != nil {
+			w.OnHeartbeat()
+		}
+	}()
 	check, cancel := context.WithTimeout(ctx, 5*time.Second)
 	ids, err := w.Tasks.Store.RecoverableJobs(check)
 	cancel()
@@ -194,6 +214,9 @@ func (w *Worker) process(ctx context.Context, message redis.XMessage) {
 		w.ack(ctx, message.ID)
 		return
 	}
+	w.active.Add(1)
+	defer w.active.Add(-1)
+	ctx = observe.WithIDs(ctx, job.RequestID, id, job.Attempt)
 	budget := w.ChatTimeout
 	if job.Task.Mode == "research" {
 		budget = w.ResearchTimeout
@@ -223,7 +246,8 @@ func (w *Worker) process(ctx context.Context, message redis.XMessage) {
 			}
 		}
 	}()
-	log.Printf("[worker] start task=%s attempt=%d mode=%s", id, job.Attempt, job.Task.Mode)
+	observe.Log(ctx, "attempt_started", "mode", job.Task.Mode)
+	started := time.Now()
 	result := w.Execute(runCtx, job)
 	runError := runCtx.Err()
 	stop()
@@ -237,7 +261,7 @@ func (w *Worker) process(ctx context.Context, message redis.XMessage) {
 	task, err := w.Tasks.Store.CompleteJob(finish, id, job.Token, result, w.RetryBase)
 	if err == nil {
 		w.Tasks.Cache.put(finish, task, time.Now())
-		log.Printf("[worker] finish task=%s attempt=%d status=%s code=%s", id, job.Attempt, task.Status, task.ErrorCode)
+		observe.Log(ctx, "attempt_finished", "status", task.Status, "code", task.ErrorCode, "duration_ms", time.Since(started).Milliseconds())
 	}
 	cancel()
 	if err != nil && !errors.Is(err, repository.ErrConflict) {

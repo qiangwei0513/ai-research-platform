@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/model"
+	"github.com/qiangwei0513/ai-research-platform/backend/internal/observe"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/repository"
 	"github.com/redis/go-redis/v9"
 )
@@ -18,6 +19,7 @@ type TaskService struct {
 	Cache          *TaskCache
 	AsyncEnabled   bool
 	MaxActiveTasks int
+	MaxDailyTasks  int
 }
 
 func (s *TaskService) RecordProgress(ctx context.Context, job repository.Job, progress model.Progress) error {
@@ -71,7 +73,16 @@ func (c *TaskCache) Health(ctx context.Context) string {
 }
 func (c *TaskCache) key(user, id string) string { return c.prefix + ":task:v1:" + user + ":" + id }
 
-func (c *TaskCache) get(ctx context.Context, user, id string) (model.Task, bool) {
+func (c *TaskCache) get(ctx context.Context, user, id string) (task model.Task, hit bool) {
+	defer func() {
+		result := "miss"
+		if c == nil {
+			result = "disabled"
+		} else if hit {
+			result = "hit"
+		}
+		observe.Add("arp_task_cache_reads_total", 1, "result", result)
+	}()
 	if c == nil {
 		return model.Task{}, false
 	}
@@ -80,6 +91,7 @@ func (c *TaskCache) get(ctx context.Context, user, id string) (model.Task, bool)
 	raw, err := c.client.Get(ctx, c.key(user, id)).Bytes()
 	if err != nil {
 		if !errors.Is(err, redis.Nil) {
+			observe.Add("arp_task_cache_errors_total", 1)
 			log.Printf("[cache] task read degraded error_type=%T", err)
 		}
 		return model.Task{}, false
@@ -141,8 +153,8 @@ func (s *TaskService) Get(ctx context.Context, user, id string) (model.Task, err
 	}
 	return t, err
 }
-func (s *TaskService) Finish(ctx context.Context, user, id string, report *model.Report, runs []model.AgentRun, code, message string) error {
-	t, err := s.Store.Finish(ctx, user, id, report, runs, code, message)
+func (s *TaskService) Finish(ctx context.Context, user, id string, report *model.Report, runs []model.AgentRun, code, message string, usage ...*model.Usage) error {
+	t, err := s.Store.Finish(ctx, user, id, report, runs, code, message, usage...)
 	if err == nil {
 		s.Cache.put(ctx, t, time.Now())
 	}

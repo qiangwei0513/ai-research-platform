@@ -1,9 +1,0 @@
-# 与根 compose.yaml 合并：保留现有反向代理，仅在本机暴露 Go 入口。
-# 不启用 standalone-https profile，因此此方式不会启动本项目的 Caddy。
-services:
-  backend:
-    ports:
-      - "127.0.0.1:${APP_PORT:-18080}:8080"
-  caddy:
-    profiles:
-      - standalone-https

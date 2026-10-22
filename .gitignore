@@ -1,4 +1,4 @@
-# 本地配置与密钥：只提交不含真实凭据的示例文件
+# 私有配置与凭据，只提交示例
 .env
 .env.*
 *.env
@@ -13,60 +13,38 @@
 id_rsa
 id_ed25519
 
-# Python 虚拟环境、依赖和缓存
+# 本地依赖与 Python 缓存
 .venv/
 venv/
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.uv-cache/
 *.egg-info/
-
-# 前端测试依赖；package.json 和 package-lock.json 需要提交
+.uv-cache/
 node_modules/
-.npm/
 
-# 编译产物
+# 编译与生成文件
 build/
 dist/
 /backend/backend
-/backend/backend.exe
 /backend/worker
-/backend/worker.exe
 /backend/bin/
-/backend/*.test
-
-# Docker 镜像导出、离线部署包及其校验文件，不上传 GitHub
-# Dockerfile、compose*.yaml 和部署说明仍需提交
+*.test
+*.exe
 *.tar
 *.tar.gz
 *.tar.zst
 *.tgz
-*.tar.sha256
-*.tar.gz.sha256
-*.tar.zst.sha256
-*.tgz.sha256
-
-# 本地数据库备份与运行数据；不要忽略 migrations/ 下的 SQL 源码
+*.sha256
 backups/
 /data/
-/deploy/data/
 dump.rdb
 appendonly.aof
 appendonlydir/
-
-# 测试覆盖率和测试输出，不忽略测试源码
-.coverage
-.coverage.*
-htmlcov/
-coverage/
-coverage.out
 test-results/
-playwright-report/
+coverage/
+.pytest_cache/
 
-# 日志、编辑器和操作系统产生的本地文件
+# 编辑器与日志
 *.log
 *.log.*
 *.pid

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/qiangwei0513/ai-research-platform/backend/internal/observe"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/repository"
 )
 
@@ -79,7 +80,11 @@ func (a *Accounts) CreateTask(c *gin.Context) {
 	if limit < 1 {
 		limit = 3
 	}
-	task, created, err := a.Tasks.Store.CreateAsyncTask(ctx, UserID(c), input.Query, input.Mode, input.Fresh, key, limit)
+	task, created, err := a.Tasks.Store.CreateAsyncTask(ctx, UserID(c), input.Query, input.Mode, input.Fresh, key, limit, repository.TaskOptions{RequestID: observe.From(ctx).Request, DailyLimit: a.Tasks.MaxDailyTasks})
+	if errors.Is(err, repository.ErrDailyQuota) {
+		c.JSON(429, gin.H{"error": "今日任务额度已用完，请在下个 UTC 日期重试", "code": "daily_quota"})
+		return
+	}
 	if errors.Is(err, repository.ErrConflict) {
 		c.JSON(409, gin.H{"error": "该 Idempotency-Key 已用于不同的研究请求"})
 		return
@@ -94,6 +99,9 @@ func (a *Accounts) CreateTask(c *gin.Context) {
 		return
 	}
 	c.Header("Location", "/api/tasks/"+task.ID)
+	c.Header("X-Task-ID", task.ID)
+	c.Request = c.Request.WithContext(observe.WithIDs(c.Request.Context(), observe.From(ctx).Request, task.ID, 0))
+	observe.Log(c.Request.Context(), "task_accepted", "created", created, "mode", task.Mode)
 	c.Header("Idempotency-Key", key)
 	c.JSON(http.StatusAccepted, gin.H{"task_id": task.ID, "status": task.Status, "created": created, "task": task})
 }

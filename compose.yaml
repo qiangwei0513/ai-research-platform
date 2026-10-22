@@ -1,75 +1,35 @@
-name: ai-research-platform
-
-x-logging: &default-logging
-  driver: json-file
-  options:
-    max-size: "10m"
-    max-file: "3"
-
+# 学习环境：在项目根目录运行 docker compose up -d --wait
+# 仅用于本机开发；固定密码不可用于公网部署。
+name: ai-research-dev-data
 services:
-  agent-service:
-    image: "${AGENT_IMAGE:-ai-research-platform-agent-service:latest}"
-    platform: "${APP_PLATFORM:-linux/amd64}"
-    build:
-      context: .
-      dockerfile: deploy/agent-service.Dockerfile
-    env_file:
-      - "${AGENT_ENV_FILE:-./agent-service/.env}"
-    restart: unless-stopped
-    init: true
-    logging: *default-logging
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).close()"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-
-  backend:
-    image: "${BACKEND_IMAGE:-ai-research-platform-backend:latest}"
-    platform: "${APP_PLATFORM:-linux/amd64}"
-    build:
-      context: .
-      dockerfile: deploy/backend.Dockerfile
+  mysql:
+    image: mysql:8.4
     environment:
-      GO_ADDR: "0.0.0.0:8080"
-      AGENT_SERVICE_URL: "http://agent-service:8000/research"
-      FRONTEND_DIR: "/app/frontend"
-      GIN_MODE: release
-      MAX_CONCURRENT_RESEARCH: "${MAX_CONCURRENT_RESEARCH:-2}"
-      RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-20}"
-    depends_on:
-      agent-service:
-        condition: service_healthy
-    restart: unless-stopped
-    init: true
-    stop_grace_period: 20s
-    logging: *default-logging
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
-  caddy:
-    image: caddy:2-alpine
-    platform: "${APP_PLATFORM:-linux/amd64}"
-    environment:
-      SITE_ADDRESS: "${SITE_ADDRESS:-http://localhost}"
+      MYSQL_DATABASE: research
+      MYSQL_USER: research
+      MYSQL_PASSWORD: dev-research-password
+      MYSQL_ROOT_PASSWORD: dev-root-password
     ports:
-      - "80:80"
-      - "443:443"
+      - "127.0.0.1:13306:3306"
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
-    logging: *default-logging
-
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h 127.0.0.1 -u research -D research -e 'SELECT 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:16379:6379"
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru", "--save", "", "--appendonly", "no"]
+  redis-queue:
+    image: redis:7.4-alpine
+    ports:
+      - "127.0.0.1:16380:6379"
+    command: ["redis-server", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - queue_data:/data
 volumes:
-  caddy_data:
-  caddy_config:
+  mysql_data:
+  queue_data:

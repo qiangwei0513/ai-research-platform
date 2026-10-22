@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/agent"
+	"github.com/qiangwei0513/ai-research-platform/backend/internal/observe"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/queue"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/repository"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/service"
@@ -24,6 +25,7 @@ func setting(name, fallback string) string {
 	return fallback
 }
 func main() {
+	observe.Configure("worker")
 	health := flag.Bool("healthcheck", false, "check worker database and queue dependencies")
 	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -33,6 +35,10 @@ func main() {
 	}
 	budget := 30 * time.Second
 	if *health {
+		info, err := os.Stat(setting("WORKER_HEARTBEAT_FILE", "/tmp/arp-worker-heartbeat"))
+		if err != nil || time.Since(info.ModTime()) > 60*time.Second {
+			log.Fatal("Worker maintenance heartbeat unavailable")
+		}
 		budget = 3 * time.Second
 	}
 	startup, cancel := context.WithTimeout(ctx, budget)
@@ -71,7 +77,10 @@ func main() {
 	}
 	tasks := &service.TaskService{Store: store, Cache: cache}
 	client := &agent.Client{URL: setting("AGENT_SERVICE_URL", "http://127.0.0.1:8000/research"), OnProgress: tasks.RecordProgress}
-	worker := &service.Worker{Tasks: tasks, Queue: stream, Execute: client.Execute, Concurrency: count}
+	heartbeatFile := setting("WORKER_HEARTBEAT_FILE", "/tmp/arp-worker-heartbeat")
+	_ = os.Remove(heartbeatFile)
+	defer os.Remove(heartbeatFile)
+	worker := &service.Worker{Tasks: tasks, Queue: stream, Execute: client.Execute, Concurrency: count, OnHeartbeat: func() { _ = os.WriteFile(heartbeatFile, []byte("alive\n"), 0600) }}
 	log.Printf("[worker] starting concurrency=%d", count)
 	worker.Run(ctx)
 	log.Print("[worker] stopped")

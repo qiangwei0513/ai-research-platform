@@ -166,15 +166,33 @@ func scanTask(row scanner) (model.Task, error) {
 	return t, err
 }
 
-func (s *Store) CreateTask(ctx context.Context, userID, query, mode string) (model.Task, error) {
+func (s *Store) CreateTask(ctx context.Context, userID, query, mode string, opts ...TaskOptions) (model.Task, error) {
 	now := time.Now().UTC()
 	budget := 150 * time.Second
 	if mode == "research" {
 		budget = 330 * time.Second
 	}
 	t := model.Task{ID: NewID(), UserID: userID, Query: query, Mode: mode, Status: "running", StartedAt: now, DeadlineAt: now.Add(budget), Version: 1}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO tasks (id,user_id,query,mode,status,started_at,deadline_at,error_message) VALUES (?,?,?,?,?,?,?,'')`, t.ID, t.UserID, t.Query, t.Mode, t.Status, t.StartedAt, t.DeadlineAt)
-	return t, err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return t, err
+	}
+	defer tx.Rollback()
+	var locked string
+	if err = tx.QueryRowContext(ctx, "SELECT id FROM users WHERE id=? FOR UPDATE", userID).Scan(&locked); err != nil {
+		return t, err
+	}
+	if err = checkDaily(ctx, tx, userID, options(opts).DailyLimit); err != nil {
+		return t, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO tasks (id,user_id,query,mode,status,started_at,deadline_at,error_message) VALUES (?,?,?,?,?,?,?,'')`, t.ID, t.UserID, t.Query, t.Mode, t.Status, t.StartedAt, t.DeadlineAt)
+	if err != nil {
+		return t, err
+	}
+	if err = saveObservation(ctx, tx, t.ID, options(opts).RequestID); err != nil {
+		return t, err
+	}
+	return t, tx.Commit()
 }
 
 func (s *Store) Task(ctx context.Context, userID, id string) (model.Task, error) {
@@ -203,7 +221,7 @@ func (s *Store) Tasks(ctx context.Context, userID string, page, size int) ([]mod
 }
 
 // 状态、阶段记录和报告在同一事务中提交；失败时全部回滚。
-func (s *Store) Finish(ctx context.Context, userID, id string, report *model.Report, runs []model.AgentRun, code, message string) (model.Task, error) {
+func (s *Store) Finish(ctx context.Context, userID, id string, report *model.Report, runs []model.AgentRun, code, message string, usage ...*model.Usage) (model.Task, error) {
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return model.Task{}, err
@@ -215,6 +233,13 @@ func (s *Store) Finish(ctx context.Context, userID, id string, report *model.Rep
 	}
 	if t.Status != "running" {
 		return t, ErrConflict
+	}
+	var measured *model.Usage
+	if len(usage) > 0 {
+		measured = usage[0]
+	}
+	if err = saveUsage(ctx, tx, id, 0, measured); err != nil {
+		return t, err
 	}
 	t, err = saveTaskResult(ctx, tx, t, report, runs, code, message)
 	if err != nil {

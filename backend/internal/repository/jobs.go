@@ -26,6 +26,7 @@ func scanTaskView(row scanner) (model.Task, error) {
 }
 
 type Job struct {
+	RequestID   string
 	Task        model.Task
 	Fresh       bool
 	Attempt     int
@@ -60,12 +61,15 @@ func lockJob(ctx context.Context, tx *sql.Tx, id string) (Job, error) {
 		return j, err
 	}
 	err = tx.QueryRowContext(ctx, "SELECT fresh,attempt,max_attempts,available_at,attempt_started_at,lease_token,lease_until FROM task_jobs WHERE task_id=? FOR UPDATE", id).Scan(&j.Fresh, &j.Attempt, &j.MaxAttempts, &j.AvailableAt, &j.StartedAt, &j.Token, &j.LeaseUntil)
+	if err == nil {
+		err = tx.QueryRowContext(ctx, "SELECT COALESCE((SELECT request_id FROM task_observations WHERE task_id=?),'')", id).Scan(&j.RequestID)
+	}
 	return j, err
 }
 
 // User locking serializes per-user quotas and idempotency. Task, job and outbox
 // commit together, so accepting a request does not require Redis availability.
-func (s *Store) CreateAsyncTask(ctx context.Context, user, query, mode string, fresh bool, key string, maxActive int) (model.Task, bool, error) {
+func (s *Store) CreateAsyncTask(ctx context.Context, user, query, mode string, fresh bool, key string, maxActive int, opts ...TaskOptions) (model.Task, bool, error) {
 	payload, _ := json.Marshal(struct {
 		Query, Mode string
 		Fresh       bool
@@ -93,6 +97,9 @@ func (s *Store) CreateAsyncTask(ctx context.Context, user, query, mode string, f
 	if !errors.Is(err, sql.ErrNoRows) {
 		return model.Task{}, false, err
 	}
+	if err = checkDaily(ctx, tx, user, options(opts).DailyLimit); err != nil {
+		return model.Task{}, false, err
+	}
 	var active int
 	if err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM tasks WHERE user_id=? AND status IN ('queued','running')", user).Scan(&active); err != nil {
 		return model.Task{}, false, err
@@ -117,6 +124,9 @@ func (s *Store) CreateAsyncTask(ctx context.Context, user, query, mode string, f
 		return t, false, err
 	}
 	if err = appendEventLocked(ctx, tx, t, nil); err != nil {
+		return t, false, err
+	}
+	if err = saveObservation(ctx, tx, t.ID, options(opts).RequestID); err != nil {
 		return t, false, err
 	}
 	return t, true, tx.Commit()
@@ -187,6 +197,7 @@ func (s *Store) RenewJob(ctx context.Context, id, token string, lease time.Durat
 }
 
 type Completion struct {
+	Usage     *model.Usage
 	Report    *model.Report
 	Runs      []model.AgentRun
 	Code      string
@@ -219,6 +230,11 @@ func (s *Store) CompleteJob(ctx context.Context, id, token string, result Comple
 }
 func completeLocked(ctx context.Context, tx *sql.Tx, j Job, result Completion, retryBase time.Duration, now time.Time) (model.Task, error) {
 	t := j.Task
+	if j.Attempt > 0 && j.Task.Status == "running" {
+		if err := saveUsage(ctx, tx, t.ID, j.Attempt, result.Usage); err != nil {
+			return t, err
+		}
+	}
 	status := "failed"
 	if result.Report != nil {
 		status = "succeeded"

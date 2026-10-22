@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/handler"
+	"github.com/qiangwei0513/ai-research-platform/backend/internal/observe"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/queue"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/repository"
 	"github.com/qiangwei0513/ai-research-platform/backend/internal/service"
@@ -20,6 +21,7 @@ import (
 var taskService *service.TaskService
 
 func main() {
+	observe.Configure("api")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	stream, err := queue.New(os.Getenv("QUEUE_REDIS_URL"), envOrDefault("QUEUE_PREFIX", "arp"))
@@ -27,7 +29,8 @@ func main() {
 		log.Fatal(err)
 	}
 	defer stream.Close()
-	r := gin.Default()
+	r := gin.New()
+	r.Use(handler.ObserveHTTP(), gin.Recovery())
 	// 不使用任意客户端传入的 X-Forwarded-For 作为可信身份。
 	if err := r.SetTrustedProxies(nil); err != nil {
 		log.Fatal(err)
@@ -69,7 +72,7 @@ func main() {
 			log.Fatal(err)
 		}
 		defer cache.Close()
-		taskService = &service.TaskService{Store: store, Cache: cache, AsyncEnabled: stream != nil, MaxActiveTasks: envInteger("MAX_ACTIVE_TASKS_PER_USER", 3, 1)}
+		taskService = &service.TaskService{Store: store, Cache: cache, AsyncEnabled: stream != nil, MaxActiveTasks: envInteger("MAX_ACTIVE_TASKS_PER_USER", 3, 1), MaxDailyTasks: envInteger("MAX_DAILY_TASKS_PER_USER", 30, 1)}
 		accounts, err := handler.NewAccounts(taskService, os.Getenv("JWT_SECRET"))
 		if err != nil {
 			log.Fatal(err)
@@ -84,6 +87,7 @@ func main() {
 		tasks.POST("", limits.middleware(), accounts.CreateTask)
 		tasks.POST("/:id/cancel", accounts.CancelTask)
 		tasks.GET("/:id/attempts", accounts.GetAttempts)
+		tasks.GET("/:id/usage", accounts.GetUsage)
 		tasks.GET("", accounts.ListTasks)
 		tasks.GET("/:id", accounts.GetTask)
 		tasks.GET("/:id/runs", accounts.GetRuns)
@@ -104,6 +108,11 @@ func main() {
 			}
 		}()
 	}
+	var metricsStore *repository.Store
+	if taskService != nil {
+		metricsStore = taskService.Store
+	}
+	r.GET("/internal/metrics", handler.Metrics(metricsStore, os.Getenv("METRICS_TOKEN")))
 	r.POST("/api/research", optionalAuth, limits.middleware(), handleResearch)
 	r.GET("/health", func(c *gin.Context) {
 		if taskService == nil {
